@@ -199,7 +199,7 @@ shared_package_records <- function(packages, required = character()) {
     dependencies <- trimws(gsub("\\s*\\([^)]*\\)", "", dependencies))
     pending <- union(pending, setdiff(dependencies[nzchar(dependencies)], names(records)))
   }
-  records[sort(names(records), method = "radix")]
+  records[sort(as.character(names(records)), method = "radix")]
 }
 
 shared_package_record <- function(description) {

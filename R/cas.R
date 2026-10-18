@@ -20,11 +20,11 @@
 shared_repository <- function(cache, consistent = FALSE) {
   shared_flag(consistent, "consistent")
   targets::tar_repository_cas(
-    upload = function(key, path) tarshare::shared_cas_upload(key, path, CACHE),
-    download = function(key, path) tarshare::shared_cas_download(key, path, CACHE),
-    exists = function(key) tarshare::shared_cas_exists(key, CACHE),
-    list = function(keys) tarshare::shared_cas_list(keys, CACHE),
-    consistent = consistent, substitute = list(CACHE = cache)
+    upload = function(key, path) tarshare::shared_cas_upload(key, path, cache),
+    download = function(key, path) tarshare::shared_cas_download(key, path, cache),
+    exists = function(key) tarshare::shared_cas_exists(key, cache),
+    list = function(keys) tarshare::shared_cas_list(keys, cache),
+    consistent = consistent, substitute = list(cache = cache)
   )
 }
 
