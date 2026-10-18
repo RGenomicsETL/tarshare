@@ -1,6 +1,6 @@
 Package: tarshare
 Title: Share Computation Results Across 'targets' Pipelines
-Version: 0.1.0
+Version: 0.2.0
 Authors@R: c(
     person("Sounkou Mahamane", "Toure", email = "sounkoutoure@gmail.com",
            role = c("aut", "cre")),
@@ -20,13 +20,12 @@ Imports:
     digest,
     filelock,
     methods,
+    stats,
     targets (>= 1.11.0),
     utils,
     vctrs
 Suggests:
     callr,
-    testthat (>= 3.0.0),
-    withr
-Config/testthat/edition: 3
+    tinytest (>= 1.4.1)
 Roxygen: list(markdown = TRUE)
-Config/roxygen2/version: 8.1.0
+RoxygenNote: 7.3.3

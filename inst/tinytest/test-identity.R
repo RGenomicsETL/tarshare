@@ -1,22 +1,30 @@
+library(tarshare)
+
+shared_identity <- tarshare:::shared_identity
+shared_package_records <- tarshare:::shared_package_records
+shared_package_record <- tarshare:::shared_package_record
+
 identity_for <- function(command, values = list(), context = list(), seed = 0L,
                          packages = character()) {
   shared_identity(command, list2env(values, parent = baseenv()),
                   context = context, seed = seed, packages = packages)
 }
 
-test_that("identities depend on referenced values, not evaluation environments", {
+# identities depend on referenced values, not evaluation environments
+(function() {
   a <- identity_for(quote(x + 1L), list(x = 2L, unused = "first"))
   b <- identity_for(quote(x + 1L), list(x = 2L, unused = new.env()))
   expect_identical(a, b)
   expect_match(a$key, "^[0-9a-f]{64}$")
-  expect_type(a$seed, "integer")
-  expect_gt(a$seed, 0L)
-  expect_lte(a$seed, .Machine$integer.max)
+  expect_identical(typeof(a$seed), "integer")
+  expect_true(a$seed > 0L)
+  expect_true(a$seed <= .Machine$integer.max)
   expect_false(identical(a$key, identity_for(quote(x + 1L), list(x = 3L))$key))
   expect_false(identical(a$key, identity_for(quote(x + 2L), list(x = 2L))$key))
-})
+})()
 
-test_that("user helper bodies, defaults and captured globals participate", {
+# user helper bodies, defaults and captured globals participate
+(function() {
   make_helper <- function(k, default = 1L) {
     env <- list2env(list(k = k), parent = baseenv())
     f <- eval(quote(function(x = 1L) x + k), env)
@@ -34,9 +42,10 @@ test_that("user helper bodies, defaults and captured globals participate", {
   body(changed_body) <- quote(x * k)
   expect_false(identical(first,
     identity_for(quote(helper()), list(helper = changed_body))$key))
-})
+})()
 
-test_that("nested helpers and captured default expressions are tracked", {
+# nested helpers and captured default expressions are tracked
+(function() {
   helper <- function(k) {
     env <- list2env(list(k = k), parent = baseenv())
     env$inner <- eval(quote(function(x = k) x * 2L), env)
@@ -45,9 +54,10 @@ test_that("nested helpers and captured default expressions are tracked", {
   a <- identity_for(quote(f()), list(f = helper(2L)))
   b <- identity_for(quote(f()), list(f = helper(3L)))
   expect_false(identical(a$key, b$key))
-})
+})()
 
-test_that("function-position lookup skips nonfunction shadow bindings", {
+# function-position lookup skips nonfunction shadow bindings
+(function() {
   outer <- new.env(parent = baseenv())
   outer$f <- eval(quote(function(x) x + 1L), outer)
   inner <- list2env(list(f = 99, x = 1L), parent = outer)
@@ -60,9 +70,10 @@ test_that("function-position lookup skips nonfunction shadow bindings", {
   before <- shared_identity(quote(list(f, f(x))), inner)
   inner$f <- 101
   expect_false(identical(before$key, shared_identity(quote(list(f, f(x))), inner)$key))
-})
+})()
 
-test_that("explicit context tracks methods selected by dynamic dispatch", {
+# explicit context tracks methods selected by dynamic dispatch
+(function() {
   env <- new.env(parent = baseenv())
   env$g <- eval(quote(function(x) UseMethod("g")), env)
   env$g.item <- eval(quote(function(x) unclass(x) + 1L), env)
@@ -71,9 +82,10 @@ test_that("explicit context tracks methods selected by dynamic dispatch", {
   env$g.item <- eval(quote(function(x) unclass(x) + 2L), env)
   b <- shared_identity(quote(g(x)), env, context = list(method = env$g.item))
   expect_false(identical(a$key, b$key))
-})
+})()
 
-test_that("recursive and mutually recursive closures have finite identities", {
+# recursive and mutually recursive closures have finite identities
+(function() {
   recursive <- function(offset) {
     env <- list2env(list(offset = offset), parent = baseenv())
     env$f <- eval(quote(function(x) if (x > 0L) g(x - 1L) else offset), env)
@@ -87,9 +99,10 @@ test_that("recursive and mutually recursive closures have finite identities", {
   env <- new.env(parent = baseenv())
   env$f <- eval(quote(function(n) if (n > 0L) f(n - 1L) else 0L), env)
   expect_match(shared_identity(quote(f(3L)), env)$key, "^[0-9a-f]{64}$")
-})
+})()
 
-test_that("source references and source locations are excluded", {
+# source references and source locations are excluded
+(function() {
   helper <- function(text) eval(parse(text = text, keep.source = TRUE),
                                 new.env(parent = baseenv()))
   f <- helper("function(x) { x + 1L }")
@@ -100,9 +113,10 @@ test_that("source references and source locations are excluded", {
   second <- parse(text = "\n# same expression\nx + 1L", keep.source = TRUE)[[1L]]
   expect_identical(identity_for(first, list(x = 2L)),
                    identity_for(second, list(x = 2L)))
-})
+})()
 
-test_that("ordinary types, attributes and names remain semantic", {
+# ordinary types, attributes and names remain semantic
+(function() {
   key <- function(x) identity_for(quote(x), list(x = x))$key
   expect_false(identical(key(1L), key(1)))
   expect_false(identical(key(c(a = 1L)), key(c(b = 1L))))
@@ -112,9 +126,10 @@ test_that("ordinary types, attributes and names remain semantic", {
   expect_false(identical(key(matrix(1:4, 2L)), key(1:4)))
   expect_identical(key(1:3), key(c(1L, 2L, 3L)))
   expect_false(identical(key(list(a = 1L, b = 2L)), key(list(b = 2L, a = 1L))))
-})
+})()
 
-test_that("file references use content IDs, names and order instead of locations", {
+# file references use content IDs, names and order instead of locations
+(function() {
   refs <- function(paths, ids, names = c("one", "two")) {
     structure(paths, class = "tarshare_file", tarshare_id = ids, names = names)
   }
@@ -127,13 +142,14 @@ test_that("file references use content IDs, names and order instead of locations
   expect_false(identical(key(a), key(refs(unclass(b), ids, c("alpha", "two")))))
   expect_false(identical(key(a), key(as.character(a))))
   expect_error(key(structure("x", class = "tarshare_file")), "Invalid tarshare_file")
-})
+})()
 
-test_that("namespace functions and recursive installed dependencies are fingerprinted", {
-  records <- shared_package_records("testthat")
-  expect_true(all(c("testthat", "waldo", "diffobj", "cli") %in% names(records)))
-  expect_identical(records$testthat$Version, as.character(packageVersion("testthat")))
-  expect_true("Built" %in% names(records$testthat))
+# namespace functions and recursive installed dependencies are fingerprinted
+(function() {
+  records <- shared_package_records("vctrs")
+  expect_true(all(c("vctrs", "rlang", "lifecycle", "cli", "glue") %in% names(records)))
+  expect_identical(records$vctrs$Version, as.character(packageVersion("vctrs")))
+  expect_true("Built" %in% names(records$vctrs))
   original <- shared_package_records
   altered_identity <- shared_identity
   hook <- new.env(parent = environment(shared_identity))
@@ -157,9 +173,10 @@ test_that("namespace functions and recursive installed dependencies are fingerpr
                          identity_for(quote(1L), packages = "stats")$key))
   expect_error(identity_for(quote(1L), packages = "tarshare_uninstalled_test_package"),
                "Required package is not installed")
-})
+})()
 
-test_that("context and user seed control identity and computation seed", {
+# context and user seed control identity and computation seed
+(function() {
   a <- identity_for(quote(stats::runif(3L)), context = list(tool = "1"), seed = 42L)
   expect_identical(a,
     identity_for(quote(stats::runif(3L)), context = list(tool = "1"), seed = 42))
@@ -170,9 +187,10 @@ test_that("context and user seed control identity and computation seed", {
   expect_false(identical(a$seed, c$seed))
   expect_error(identity_for(quote(1L), seed = -1L), "nonnegative R integer")
   expect_error(identity_for(quote(1L), seed = 0.5), "nonnegative R integer")
-})
+})()
 
-test_that("package installation dates are excluded while ABI metadata remains", {
+# package installation dates are excluded while ABI metadata remains
+(function() {
   description <- list(Package = "stats", Version = "1.0", RemoteSha = "commit-one",
     Built = "R 4.5.3; x86_64-pc-linux-gnu; 2026-01-01 12:00:00 UTC; unix")
   original <- shared_package_records
@@ -192,9 +210,10 @@ test_that("package installation dates are excluded while ABI metadata remains", 
   expect_identical(first, key(description))
   description$Built <- "R 4.5.3; aarch64-apple-darwin; 2026-10-01 16:00:00 UTC; unix"
   expect_false(identical(first, key(description)))
-})
+})()
 
-test_that("live values and active dependencies are rejected", {
+# live values and active dependencies are rejected
+(function() {
   expect_error(identity_for(quote(x), list(x = new.env())), "live environments")
   expect_error(identity_for(quote(x), list(x = list(inner = new.env()))), "live environments")
   expect_error(identity_for(quote(x), list(x = structure(1L, state = new.env()))),
@@ -209,4 +228,4 @@ test_that("live values and active dependencies are rejected", {
   makeActiveBinding("x", function() 1L, env)
   expect_error(shared_identity(quote(x), env), "active binding")
   expect_error(shared_identity(quote(missing_value), env), "Cannot resolve command dependency")
-})
+})()

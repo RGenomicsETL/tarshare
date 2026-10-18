@@ -1,5 +1,8 @@
-test_that("two R processes coordinate one computation", {
-  skip_if_not_installed("callr")
+library(tarshare)
+
+# two R processes coordinate one computation
+(function() {
+  if (!requireNamespace("callr", quietly = TRUE)) return(invisible(NULL))
   root <- tempfile("tarshare-concurrent-")
   dir.create(root)
   on.exit(unlink(root, recursive = TRUE))
@@ -25,10 +28,11 @@ test_that("two R processes coordinate one computation", {
   expect_identical(a$get_result(), c(result = 42L))
   expect_identical(b$get_result(), c(result = 42L))
   expect_length(readLines(file.path(root, "computed.txt")), 1L)
-})
+})()
 
-test_that("a killed writer releases the key and never publishes partial output", {
-  skip_if_not_installed("callr")
+# a killed writer releases the key and never publishes partial output
+(function() {
+  if (!requireNamespace("callr", quietly = TRUE)) return(invisible(NULL))
   root <- tempfile("tarshare-killed-writer-")
   dir.create(root)
   on.exit(unlink(root, recursive = TRUE))
@@ -62,4 +66,4 @@ test_that("a killed writer releases the key and never publishes partial output",
   out <- callr::r(worker, args = list(root), libpath = .libPaths(), timeout = 10)
   expect_identical(readLines(out), "complete")
   expect_false(grepl(".stage-", out, fixed = TRUE))
-})
+})()

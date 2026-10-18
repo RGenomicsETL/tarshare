@@ -131,6 +131,7 @@ shared_bundle_paths <- function(entry, bundle) {
 
 shared_bundle_valid <- function(entry, bundle, verify) {
   root <- file.path(entry, "files")
+  if (!dir.exists(root)) return(FALSE)
   inventory <- shared_scan_bundle(root)
   files <- file.path(root, bundle$files)
   if (!identical(shared_relative(inventory$files, root), bundle$files) ||

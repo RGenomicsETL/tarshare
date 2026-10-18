@@ -1,3 +1,5 @@
+library(tarshare)
+
 shared_test_project <- function(cache, name = "result", input = 3L,
                                 context = "list()") {
   project <- tempfile("tarshare-project-")
@@ -19,7 +21,7 @@ shared_test_write_project <- function(project, cache, name = "result", input = 3
       paste0("  targets::tar_target(input, ", deparse(input), "),"),
       paste0(
         "  tarshare::tar_shared(", name, ", record(input), cache, ",
-        "context = ", context, ", packages = character())"
+        "branch_context = ", context, ", packages = character())"
       ),
       ")"
     ),
@@ -65,7 +67,8 @@ shared_test_write_branches <- function(project, cache, name, values) {
   )
 }
 
-test_that("independent stores and renamed targets reuse a computation", {
+# independent stores and renamed targets reuse a computation
+(function() {
   cache <- tempfile("tarshare-cache-")
   first <- shared_test_project(cache)
   second <- shared_test_project(cache, name = "renamed")
@@ -82,9 +85,10 @@ test_that("independent stores and renamed targets reuse a computation", {
   progress <- targets::tar_progress(store = file.path(second, "_targets"))
   expect_identical(progress$progress[progress$name == "renamed"], "skipped")
   expect_identical(shared_test_calls(second), 0L)
-})
+})()
 
-test_that("changed upstream values miss and reverting recovers shared results", {
+# changed upstream values miss and reverting recovers shared results
+(function() {
   cache <- tempfile("tarshare-cache-")
   project <- shared_test_project(cache)
   on.exit(unlink(c(cache, project), recursive = TRUE))
@@ -99,9 +103,10 @@ test_that("changed upstream values miss and reverting recovers shared results", 
   shared_test_make(project)
   expect_identical(shared_test_read(project, "result"), 6L)
   expect_identical(shared_test_calls(project), 2L)
-})
+})()
 
-test_that("runtime context remains a targets dependency", {
+# runtime context remains a targets dependency
+(function() {
   cache <- tempfile("tarshare-cache-")
   project <- tempfile("tarshare-project-")
   dir.create(project)
@@ -118,7 +123,7 @@ test_that("runtime context remains a targets dependency", {
         paste0("  targets::tar_target(revision, ", deparse(revision), "),"),
         paste0(
           "  tarshare::tar_shared(result, record(), cache, ",
-          "context = list(release = revision), packages = character())"
+          "branch_context = list(release = revision), packages = character())"
         ),
         ")"
       ),
@@ -132,9 +137,10 @@ test_that("runtime context remains a targets dependency", {
   shared_test_make(project)
   expect_identical(shared_test_calls(project), 2L)
   expect_identical(shared_test_read(project, "result"), 7L)
-})
+})()
 
-test_that("dynamic branches reuse their effective input values across stores", {
+# dynamic branches reuse their effective input values across stores
+(function() {
   cache <- tempfile("tarshare-cache-")
   first <- tempfile("tarshare-project-")
   second <- tempfile("tarshare-project-")
@@ -149,9 +155,10 @@ test_that("dynamic branches reuse their effective input values across stores", {
   expect_identical(unname(shared_test_read(second, "renamed")), c(6L, 8L))
   expect_identical(shared_test_calls(first), 2L)
   expect_identical(shared_test_calls(second), 1L)
-})
+})()
 
-test_that("default tar_make subprocesses share dynamic results", {
+# default tar_make subprocesses share dynamic results
+(function() {
   cache <- tempfile("tarshare-cache-")
   first <- tempfile("tarshare-project-")
   second <- tempfile("tarshare-project-")
@@ -172,9 +179,10 @@ test_that("default tar_make subprocesses share dynamic results", {
   expect_identical(unname(shared_test_read(second, "renamed")), c(6L, 8L))
   expect_identical(shared_test_calls(first), 2L)
   expect_identical(shared_test_calls(second), 1L)
-})
+})()
 
-test_that("replicate context gives distinct reproducible branch RNG streams", {
+# replicate context gives distinct reproducible branch RNG streams
+(function() {
   cache <- tempfile("tarshare-cache-")
   first <- tempfile("tarshare-project-")
   second <- tempfile("tarshare-project-")
@@ -194,7 +202,7 @@ test_that("replicate context gives distinct reproducible branch RNG streams", {
         paste0(
           "  tarshare::tar_shared(", name, ", draw(), cache, ",
           "pattern = map(replicate_id), ",
-          "context = list(replicate = replicate_id), packages = character())"
+          "branch_context = list(replicate = replicate_id), packages = character())"
         ),
         ")"
       ),
@@ -210,9 +218,10 @@ test_that("replicate context gives distinct reproducible branch RNG streams", {
   expect_identical(unname(shared_test_read(second, "renamed")), values)
   expect_identical(shared_test_calls(first), 3L)
   expect_identical(shared_test_calls(second), 0L)
-})
+})()
 
-test_that("the raw factory preserves runtime context and seed expressions", {
+# the raw factory preserves runtime context and seed expressions
+(function() {
   cache <- tempfile("tarshare-cache-")
   project <- tempfile("tarshare-project-")
   dir.create(project)
@@ -224,7 +233,7 @@ test_that("the raw factory preserves runtime context and seed expressions", {
       "  targets::tar_target(input, 1:2),",
       "  tarshare::tar_shared_raw(",
       "    'result', quote(input * 2L), cache, pattern = quote(map(input)),",
-      "    context = quote(list(replicate = input)), seed = quote(input),",
+      "    branch_context = quote(list(replicate = input)), seed = quote(input),",
       "    packages = character()",
       "  )",
       ")"
@@ -233,9 +242,10 @@ test_that("the raw factory preserves runtime context and seed expressions", {
   )
   shared_test_make(project)
   expect_identical(unname(shared_test_read(project, "result")), c(2L, 4L))
-})
+})()
 
-test_that("file targets reuse complete cache-owned bundles across stores", {
+# file targets reuse complete cache-owned bundles across stores
+(function() {
   cache <- tempfile("tarshare-cache-")
   first <- tempfile("tarshare-project-")
   second <- tempfile("tarshare-project-")
@@ -280,7 +290,7 @@ test_that("file targets reuse complete cache-owned bundles across stores", {
   expect_identical(shared_test_read(second, "renamed"), paths)
   expect_identical(shared_test_calls(first), 1L)
   expect_identical(shared_test_calls(second), 0L)
-})
+})()
 
 shared_test_file_identity_branches <- function(iteration) {
   cache <- tempfile("tarshare-cache-")
@@ -346,10 +356,12 @@ shared_test_file_identity_branches <- function(iteration) {
   expect_identical(shared_test_calls(second), 1L)
 }
 
-test_that("list branches preserve file identities across relocation and updates", {
+# list branches preserve file identities across relocation and updates
+(function() {
   shared_test_file_identity_branches("list")
-})
+})()
 
-test_that("vector branches preserve file identities across relocation and updates", {
+# vector branches preserve file identities across relocation and updates
+(function() {
   shared_test_file_identity_branches("vector")
-})
+})()

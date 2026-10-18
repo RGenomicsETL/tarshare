@@ -11,12 +11,16 @@
 #'   integrity and bundle completeness are checked either way.
 #' @param timeout Seconds to wait for another process computing the same key.
 #'   The default waits until the other process finishes or exits.
+#' @param visibility_timeout Maximum seconds to retry a missing or incomplete
+#'   result after acquiring its lock. Zero is appropriate for a local filesystem.
+#' @param poll_interval Seconds between visibility retries.
 #' @return A cache configuration object. Construction creates the directory.
 #' @export
 #' @examples
 #' cache <- shared_cache(tempfile("shared-cache-"))
 #' shared_run(sum(1:10), cache)
-shared_cache <- function(path, verify = TRUE, timeout = Inf) {
+shared_cache <- function(path, verify = TRUE, timeout = Inf,
+                         visibility_timeout = 0, poll_interval = 0.05) {
   if (!is.character(path) || length(path) != 1L || is.na(path) || !nzchar(path)) {
     stop("path must be one nonempty directory path.", call. = FALSE)
   }
@@ -26,10 +30,16 @@ shared_cache <- function(path, verify = TRUE, timeout = Inf) {
   if (!is.numeric(timeout) || length(timeout) != 1L || is.na(timeout) || timeout < 0) {
     stop("timeout must be a nonnegative number of seconds.", call. = FALSE)
   }
+  shared_seconds(visibility_timeout, "visibility_timeout")
+  shared_seconds(poll_interval, "poll_interval", positive = TRUE)
   path <- path.expand(path)
   shared_mkdir(path)
+  for (kind in c("actions", "objects", "native", "refs", "locks", "exports")) {
+    shared_mkdir(file.path(path, "v2", kind))
+  }
   structure(
-    list(path = normalizePath(path, winslash = "/"), verify = verify, timeout = timeout),
+    list(path = normalizePath(path, winslash = "/"), verify = verify, timeout = timeout,
+         visibility_timeout = visibility_timeout, poll_interval = poll_interval),
     class = "tarshare_cache"
   )
 }
@@ -55,6 +65,12 @@ shared_cache <- function(path, verify = TRUE, timeout = Inf) {
 #'   distinct input or context values, or a different `seed`.
 #' @param packages Additional installed packages whose versions should enter the
 #'   key. Namespaced calls and functions' namespaces are discovered automatically.
+#' @param owner Retention owner. Defaults to the current targets store, or the
+#'   working directory for standalone calls. References are cumulative until
+#'   explicitly released with [shared_release()]. Not part of the action key.
+#' @param localize Copy file outputs to disposable cache-local export staging.
+#'   Used by the target factory for nonlocal repositories which may move inputs.
+#'   Return the bundle directory or explicitly return every sidecar in this mode.
 #' @return The R value or the cache-owned paths returned by the computation.
 #' @details
 #' Use deterministic computations with explicit inputs. Static code analysis
@@ -83,55 +99,63 @@ shared_cache <- function(path, verify = TRUE, timeout = Inf) {
 #'   path
 #' }, cache, format = "file")
 shared_run <- function(command, cache, format = "rds", context = list(),
-                       seed = 0L, packages = character()) {
+                       seed = 0L, packages = character(), owner = shared_owner(),
+                       localize = FALSE) {
   expr <- substitute(command)
   envir <- parent.frame()
   if (!inherits(cache, "tarshare_cache")) {
     stop("cache must be created with shared_cache().", call. = FALSE)
   }
   format <- match.arg(format, c("rds", "file"))
+  shared_owner_check(owner)
+  shared_flag(localize, "localize")
   identity <- shared_identity(
     expr, envir, list(format = format, context = context), seed, packages
   )
   key <- identity$key
-  parent <- file.path(cache$path, "entries", substr(key, 1L, 2L))
-  lock_parent <- file.path(cache$path, "locks", substr(key, 1L, 2L))
-  shared_mkdir(parent)
-  shared_mkdir(lock_parent)
-  lock <- filelock::lock(
-    file.path(lock_parent, paste0(key, ".lock")),
-    timeout = cache$timeout * 1000
-  )
-  if (is.null(lock)) {
-    stop("Timed out waiting for shared computation ", key, ".", call. = FALSE)
-  }
-  on.exit(filelock::unlock(lock), add = TRUE)
-  entry <- file.path(parent, key)
-  restored <- shared_restore(entry, key, format, cache$verify)
-  if (restored$hit) {
-    shared_event("hit", key)
-    return(restored$value)
-  }
-  stage <- tempfile(pattern = paste0(".stage-", key, "-"), tmpdir = parent)
-  shared_mkdir(file.path(stage, "files"))
-  on.exit(unlink(stage, recursive = TRUE), add = TRUE)
-  shared_event("compute", key)
-  value <- shared_compute(expr, envir, identity$seed, stage, format)
-  record <- list(schema = 1L, key = key, format = format)
-  if (identical(format, "file")) {
-    record$bundle <- shared_bundle(value, file.path(stage, "files"))
+  gate <- shared_gate(cache)
+  on.exit(shared_ungate(cache, gate), add = TRUE)
+  lock <- shared_lock(cache, paste0("action-", key))
+  on.exit(filelock::unlock(lock), add = TRUE, after = FALSE)
+  restored <- shared_retry(cache, function() shared_restore(cache, key, format))
+  if (is.null(restored)) {
+    stage <- shared_stage(cache, "objects")
+    on.exit(unlink(stage, recursive = TRUE), add = TRUE, after = FALSE)
+    shared_mkdir(file.path(stage, "files"))
+    shared_event("compute", key)
+    value <- shared_compute(expr, envir, identity$seed, stage, format)
+    record <- list(schema = 2L, format = format)
+    if (identical(format, "file")) {
+      record$bundle <- shared_bundle(value, file.path(stage, "files"))
+    } else {
+      shared_assert_value(value)
+      record$value <- value
+    }
+    object <- shared_write_record(record, stage)
+    object_path <- shared_location(cache, "objects", object)
+    object_lock <- shared_lock(cache, paste0("object-", object))
+    tryCatch({
+      if (is.null(shared_object_read(object_path, cache$verify, object))) {
+        shared_publish(stage, object_path)
+      }
+    }, finally = filelock::unlock(object_lock))
+    # Publish the action only after the complete content object is readable.
+    restored <- shared_retry(cache, function() {
+      record <- shared_object_read(object_path, cache$verify, object)
+      if (is.null(record)) NULL else list(record = record, path = object_path)
+    })
+    if (is.null(restored)) shared_storage_error("Published object is not readable.")
+    action_stage <- shared_stage(cache, "actions")
+    on.exit(unlink(action_stage, recursive = TRUE), add = TRUE, after = FALSE)
+    shared_write_record(list(schema = 2L, key = key, object = object,
+                             format = format), action_stage)
+    shared_publish(action_stage, shared_location(cache, "actions", key))
   } else {
-    shared_assert_value(value)
-    record$value <- value
+    shared_event("hit", key)
   }
-  record_path <- file.path(stage, "result.rds")
-  saveRDS(record, record_path, compress = FALSE, version = 3L)
-  writeLines(shared_file_hash(record_path), file.path(stage, "complete"))
-  shared_publish(stage, entry)
-  if (identical(format, "file")) {
-    return(shared_bundle_paths(entry, record$bundle))
-  }
-  value
+  # A retained owner reference outlives this invocation and any local store.
+  shared_pin(cache, owner, "actions", key)
+  shared_deliver(cache, restored, localize)
 }
 
 shared_runtime <- new.env(parent = emptyenv())
@@ -155,30 +179,15 @@ shared_compute <- function(expr, envir, seed, stage, format) {
   eval(expr, envir = envir)
 }
 
-shared_restore <- function(entry, key, format, verify) {
-  miss <- list(hit = FALSE)
-  if (!file.exists(file.path(entry, "complete"))) {
-    return(miss)
-  }
-  tryCatch({
-    checksum <- readLines(file.path(entry, "complete"), warn = FALSE)
-    record_path <- file.path(entry, "result.rds")
-    if (length(checksum) != 1L || !identical(checksum, shared_file_hash(record_path))) {
-      return(miss)
-    }
-    record <- readRDS(record_path)
-    if (!identical(record$schema, 1L) || !identical(record$key, key) ||
-        !identical(record$format, format)) {
-      return(miss)
-    }
-    if (identical(format, "file")) {
-      if (!shared_bundle_valid(entry, record$bundle, verify)) {
-        return(miss)
-      }
-      return(list(hit = TRUE, value = shared_bundle_paths(entry, record$bundle)))
-    }
-    list(hit = TRUE, value = record$value)
-  }, error = function(error) miss, warning = function(warning) miss)
+shared_restore <- function(cache, key, format) {
+  action <- shared_read_record(shared_location(cache, "actions", key))
+  if (is.null(action) || !identical(action$schema, 2L) ||
+      !identical(action$key, key) || !identical(action$format, format) ||
+      !shared_is_key(action$object)) return(NULL)
+  path <- shared_location(cache, "objects", action$object)
+  record <- shared_object_read(path, cache$verify, action$object)
+  if (is.null(record) || !identical(record$format, format)) return(NULL)
+  list(record = record, path = path)
 }
 
 shared_publish <- function(stage, entry) {

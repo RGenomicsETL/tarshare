@@ -1,3 +1,5 @@
+library(tarshare)
+
 cache_fixture <- function() {
   root <- tempfile("tarshare-tests-")
   dir.create(root)
@@ -13,7 +15,8 @@ cache_events <- function(code) {
   list(value = value, events = events)
 }
 
-test_that("cached NULL and structured R values retain types and attributes", {
+# cached NULL and structured R values retain types and attributes
+(function() {
   fixture <- cache_fixture()
   on.exit(unlink(fixture$root, recursive = TRUE))
   cache <- fixture$cache
@@ -27,9 +30,10 @@ test_that("cached NULL and structured R values retain types and attributes", {
   null <- function() shared_run(NULL, cache)
   expect_null(cache_events(null())$value)
   expect_identical(cache_events(null())$events, "hit")
-})
+})()
 
-test_that("file bundles retain structure and complete sidecars", {
+# file bundles retain structure and complete sidecars
+(function() {
   fixture <- cache_fixture()
   on.exit(unlink(fixture$root, recursive = TRUE))
   cache <- fixture$cache
@@ -56,9 +60,10 @@ test_that("file bundles retain structure and complete sidecars", {
   repaired <- cache_events(run())
   expect_identical(repaired$events, "compute")
   expect_true(file.exists(paste0(repaired$value[[1L]], ".index")))
-})
+})()
 
-test_that("directory outputs include empty subdirectories", {
+# directory outputs include empty subdirectories
+(function() {
   fixture <- cache_fixture()
   on.exit(unlink(fixture$root, recursive = TRUE))
   cache <- fixture$cache
@@ -74,9 +79,10 @@ test_that("directory outputs include empty subdirectories", {
   expect_identical(cache_events(run())$events, "hit")
   unlink(file.path(path, "empty"), recursive = TRUE)
   expect_identical(cache_events(run())$events, "compute")
-})
+})()
 
-test_that("same-size file corruption and damaged records do not become hits", {
+# same-size file corruption and damaged records do not become hits
+(function() {
   fixture <- cache_fixture()
   on.exit(unlink(fixture$root, recursive = TRUE))
   cache <- fixture$cache
@@ -94,9 +100,10 @@ test_that("same-size file corruption and damaged records do not become hits", {
   record <- file.path(dirname(dirname(path)), "result.rds")
   writeLines("broken", record)
   expect_identical(cache_events(run())$events, "compute")
-})
+})()
 
-test_that("errors leave no published result or lock held", {
+# errors leave no published result or lock held
+(function() {
   fixture <- cache_fixture()
   on.exit(unlink(fixture$root, recursive = TRUE))
   cache <- fixture$cache
@@ -108,11 +115,12 @@ test_that("errors leave no published result or lock held", {
   expect_error(suppressMessages(run()), "computation failed")
   expect_error(suppressMessages(run()), "computation failed")
   expect_length(list.files(cache$path, pattern = "^complete$", recursive = TRUE), 0L)
-  expect_length(list.files(file.path(cache$path, "entries"),
+  expect_length(list.files(file.path(cache$path, "v2", "objects"),
                           pattern = "^.stage-", recursive = TRUE, all.files = TRUE), 0L)
-})
+})()
 
-test_that("files outside staging and symbolic links are rejected", {
+# files outside staging and symbolic links are rejected
+(function() {
   fixture <- cache_fixture()
   on.exit(unlink(fixture$root, recursive = TRUE))
   cache <- fixture$cache
@@ -124,7 +132,7 @@ test_that("files outside staging and symbolic links are rejected", {
   escape <- function() shared_path("../escape.txt")
   expect_error(suppressMessages(shared_run(escape(), cache, format = "file")),
                "relative")
-  skip_on_os("windows")
+  if (.Platform$OS.type == "windows") return(invisible(NULL))
   link <- function() {
     out <- shared_path("linked.txt")
     file.symlink(outside, out)
@@ -132,9 +140,10 @@ test_that("files outside staging and symbolic links are rejected", {
   }
   expect_error(suppressMessages(shared_run(link(), cache, format = "file")),
                "symbolic links")
-})
+})()
 
-test_that("input content identity allows reuse across locations", {
+# input content identity allows reuse across locations
+(function() {
   fixture <- cache_fixture()
   on.exit(unlink(fixture$root, recursive = TRUE))
   cache <- fixture$cache
@@ -154,9 +163,10 @@ test_that("input content identity allows reuse across locations", {
   # Supplied immutable identities do not cause any file read.
   identified <- shared_file(file.path(fixture$root, "not-localized.txt"), id = "version-1")
   expect_identical(attr(identified, "tarshare_id"), "version-1")
-})
+})()
 
-test_that("RNG state is restored after hits, misses, and failures", {
+# RNG state is restored after hits, misses, and failures
+(function() {
   fixture <- cache_fixture()
   on.exit(unlink(fixture$root, recursive = TRUE))
   cache <- fixture$cache
@@ -174,9 +184,10 @@ test_that("RNG state is restored after hits, misses, and failures", {
   expect_error(suppressMessages(shared_run({ stats::rnorm(1); stop("failed") }, cache)),
                "failed")
   expect_identical(.Random.seed, before)
-})
+})()
 
-test_that("R outputs cannot contain live resources", {
+# R outputs cannot contain live resources
+(function() {
   fixture <- cache_fixture()
   on.exit(unlink(fixture$root, recursive = TRUE))
   cache <- fixture$cache
@@ -186,4 +197,4 @@ test_that("R outputs cannot contain live resources", {
   call_value <- function() as.call(list(quote(identity), new.env(parent = emptyenv())))
   expect_error(suppressMessages(shared_run(expression_value(), cache)), "self-contained")
   expect_error(suppressMessages(shared_run(call_value(), cache)), "self-contained")
-})
+})()

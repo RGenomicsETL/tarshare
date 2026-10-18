@@ -9,6 +9,7 @@ permissions:
 jobs:
   check:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -20,7 +21,28 @@ jobs:
           use-public-rspm: true
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
-          extra-packages: any::rcmdcheck
+          extra-packages: |
+            any::rcmdcheck
+            any::roxygen2
+      - name: Generate public help from R sources
+        shell: Rscript {0}
+        run: |
+          roxygen2::roxygenise()
+          for (path in c("NAMESPACE", list.files("man", full.names = TRUE))) {
+            cat("\nDOCUMENT_BEGIN ", path, "\n", sep = "")
+            cat(readLines(path), sep = "\n")
+            cat("\nDOCUMENT_END\n")
+          }
       - uses: r-lib/actions/check-r-package@v2
         with:
           args: 'c("--no-manual", "--as-cran")'
+      - name: Print complete check and tinytest logs
+        if: always()
+        shell: Rscript {0}
+        run: |
+          paths <- list.files("..", pattern = "(00check[.]log|tinytest[.]Rout([.]fail)?)$", recursive = TRUE, full.names = TRUE)
+          for (path in paths) {
+            cat("\nLOG_BEGIN ", path, "\n", sep = "")
+            cat(readLines(path, warn = FALSE), sep = "\n")
+            cat("\nLOG_END\n")
+          }

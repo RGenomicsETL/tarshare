@@ -16,10 +16,12 @@
 #' @param format Either `"rds"` for an R value or `"file"` for files created with
 #'   [shared_path()]. Cached files remain owned by the shared cache; downstream
 #'   commands must treat them as immutable.
-#' @param context Additional execution or scientific context for the shared key.
-#'   `tar_shared()` captures this expression so it can use upstream targets and
-#'   individual branch values. Supply an expression object or a literal value
-#'   to `tar_shared_raw()`.
+#' @param context External context, evaluated once when the target is declared.
+#'   Use [shared_context()] to snapshot options, resources and provider identities.
+#'   Its canonical identity is embedded in the target command and the shared key.
+#'   For the raw factory, supply a value, not a quoted expression.
+#' @param branch_context Target-derived context, captured as an expression.
+#'   Use this for upstream targets and dynamic branch values, not ambient state.
 #' @param seed Seed input for [shared_run()]. This also remains a runtime
 #'   expression in `tar_shared()`; supply an expression object or literal value
 #'   to `tar_shared_raw()`. The effective RNG stream is derived from the shared
@@ -28,14 +30,15 @@
 #' @param packages Character vector of packages to load for this target and
 #'   include in its execution identity. Evaluated when the target is declared.
 #' @param ... Other arguments to [targets::tar_target_raw()], such as
-#'   `iteration`, `cue`, `memory`, or `deployment`. The first version supports
-#'   `repository = "local"`. Overrides of `deps` and `string` are unsupported:
+#'   `iteration`, `cue`, `memory`, `deployment`, or a public CAS `repository`.
+#'   Nonlocal file outputs are copied before repository upload; return the whole
+#'   bundle directory or every sidecar. Overrides of `deps` and `string` are unsupported:
 #'   ordinary dependency detection and command invalidation remain enabled.
 #'
 #' @return A target definition object to include in a targets pipeline.
 #'
 #' @details
-#' The original command, context, and seed are embedded as unquoted expressions
+#' The command, branch context, and seed are embedded as unquoted expressions
 #' in the generated command. This preserves the ordinary static dependency
 #' analysis of `targets`, including dynamic branch inputs. No target metadata
 #' is read or modified by these factories.
@@ -50,7 +53,7 @@
 #' tar_shared(result, sum(data), cache)
 #' tar_shared(
 #'   simulations, stats::rnorm(2), cache,
-#'   pattern = map(replicate_id), context = list(replicate = replicate_id)
+#'   pattern = map(replicate_id), branch_context = list(replicate = replicate_id)
 #' )
 #' tar_shared_raw("result", quote(sum(data)), cache)
 #' @export
@@ -61,6 +64,7 @@ tar_shared <- function(
   pattern = NULL,
   format = c("rds", "file"),
   context = list(),
+  branch_context = list(),
   seed = 0L,
   packages = targets::tar_option_get("packages"),
   ...
@@ -75,7 +79,8 @@ tar_shared <- function(
     cache = cache,
     pattern = substitute(pattern),
     format = format,
-    context = substitute(context),
+    context = context,
+    branch_context = substitute(branch_context),
     seed = substitute(seed),
     packages = packages,
     ...
@@ -90,7 +95,8 @@ tar_shared_raw <- function(
   cache,
   pattern = NULL,
   format = c("rds", "file"),
-  context = quote(list()),
+  context = list(),
+  branch_context = quote(list()),
   seed = 0L,
   packages = targets::tar_option_get("packages"),
   ...
@@ -110,26 +116,34 @@ tar_shared_raw <- function(
   } else {
     targets::tar_option_get("repository")
   }
-  if (!identical(repository, "local")) {
-    stop("tar_shared() currently requires repository = \"local\".", call. = FALSE)
+  dots$repository <- repository
+  # Context is intentionally eager. Dynamic target/branch values belong in
+  # branch_context, which remains visible to ordinary targets dependency analysis.
+  if (is.language(context) || is.expression(context)) {
+    stop("context must be resolved at graph construction; use branch_context for target expressions.",
+         call. = FALSE)
   }
-  dots$repository <- "local"
+  execution <- shared_identity(quote(NULL), baseenv(), context = context,
+                               packages = packages)$key
   command <- shared_target_expression(command, "command")
   pattern <- shared_target_expression(pattern, "pattern")
-  context <- shared_target_expression(context, "context")
+  branch_context <- shared_target_expression(branch_context, "branch_context")
   seed <- shared_target_expression(seed, "seed")
   command <- substitute(
     tarshare::shared_run(
       command = COMMAND,
       cache = CACHE,
       format = FORMAT,
-      context = CONTEXT,
+      context = list(static = CONTEXT, branch = BRANCH_CONTEXT),
       seed = SEED,
-      packages = PACKAGES
+      packages = PACKAGES,
+      owner = tarshare::shared_owner(store = targets::tar_path_store()),
+      localize = LOCALIZE
     ),
     list(
       COMMAND = command, CACHE = cache, FORMAT = format,
-      CONTEXT = context, SEED = seed, PACKAGES = packages
+      CONTEXT = execution, BRANCH_CONTEXT = branch_context,
+      SEED = seed, PACKAGES = packages, LOCALIZE = !identical(repository, "local")
     )
   )
   do.call(
