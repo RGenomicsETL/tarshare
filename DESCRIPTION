@@ -1,0 +1,32 @@
+Package: tarshare
+Title: Share Computation Results Across 'targets' Pipelines
+Version: 0.1.0
+Authors@R: c(
+    person("Sounkou Mahamane", "Toure", email = "sounkoutoure@gmail.com",
+           role = c("aut", "cre")),
+    person("RGenomicsETL", role = "cph"))
+Description: Reuse computations across independent 'targets' stores through an
+    opt-in target factory and a shared filesystem cache. Computation keys include
+    code, referenced values and helper functions, package identities, execution
+    context, and a reproducible random seed. Supports ordinary R values and
+    complete file bundles, immutable input identities, coordinated writers, and
+    atomic publication. Uses public 'targets' interfaces without editing pipeline
+    metadata.
+License: GPL-3
+Encoding: UTF-8
+Depends: R (>= 4.1.0)
+Imports:
+    codetools,
+    digest,
+    filelock,
+    methods,
+    targets (>= 1.11.0),
+    utils,
+    vctrs
+Suggests:
+    callr,
+    testthat (>= 3.0.0),
+    withr
+Config/testthat/edition: 3
+Roxygen: list(markdown = TRUE)
+Config/roxygen2/version: 8.1.0

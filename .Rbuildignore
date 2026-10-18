@@ -1,0 +1,7 @@
+^\.github$
+^\.git$
+^\.gitignore$
+^.*\.Rcheck$
+^tarshare_.*\.tar\.gz$
+^REVIEW\.md$
+^validation$
