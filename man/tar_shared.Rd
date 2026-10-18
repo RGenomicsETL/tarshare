@@ -12,6 +12,7 @@ tar_shared(
   pattern = NULL,
   format = c("rds", "file"),
   context = list(),
+  branch_context = list(),
   seed = 0L,
   packages = targets::tar_option_get("packages"),
   ...
@@ -23,7 +24,8 @@ tar_shared_raw(
   cache,
   pattern = NULL,
   format = c("rds", "file"),
-  context = quote(list()),
+  context = list(),
+  branch_context = quote(list()),
   seed = 0L,
   packages = targets::tar_option_get("packages"),
   ...
@@ -46,10 +48,13 @@ an expression object or \code{NULL} to \code{tar_shared_raw()}.}
 \code{\link[=shared_path]{shared_path()}}. Cached files remain owned by the shared cache; downstream
 commands must treat them as immutable.}
 
-\item{context}{Additional execution or scientific context for the shared key.
-\code{tar_shared()} captures this expression so it can use upstream targets and
-individual branch values. Supply an expression object or a literal value
-to \code{tar_shared_raw()}.}
+\item{context}{External context, evaluated once when the target is declared.
+Use \code{\link[=shared_context]{shared_context()}} to snapshot options, resources and provider identities.
+Its canonical identity is embedded in the target command and the shared key.
+For the raw factory, supply a value, not a quoted expression.}
+
+\item{branch_context}{Target-derived context, captured as an expression.
+Use this for upstream targets and dynamic branch values, not ambient state.}
 
 \item{seed}{Seed input for \code{\link[=shared_run]{shared_run()}}. This also remains a runtime
 expression in \code{tar_shared()}; supply an expression object or literal value
@@ -61,8 +66,9 @@ stochastic replicates distinct seeds or replicate identities in \code{context}.}
 include in its execution identity. Evaluated when the target is declared.}
 
 \item{...}{Other arguments to \code{\link[targets:tar_target_raw]{targets::tar_target_raw()}}, such as
-\code{iteration}, \code{cue}, \code{memory}, or \code{deployment}. The first version supports
-\code{repository = "local"}. Overrides of \code{deps} and \code{string} are unsupported:
+\code{iteration}, \code{cue}, \code{memory}, \code{deployment}, or a public CAS \code{repository}.
+Nonlocal file outputs are copied before repository upload; return the whole
+bundle directory or every sidecar. Overrides of \code{deps} and \code{string} are unsupported:
 ordinary dependency detection and command invalidation remain enabled.}
 }
 \value{
@@ -75,7 +81,7 @@ pipeline's metadata. An existing shared result avoids evaluating the original
 command after the target is dispatched.
 }
 \details{
-The original command, context, and seed are embedded as unquoted expressions
+The command, branch context, and seed are embedded as unquoted expressions
 in the generated command. This preserves the ordinary static dependency
 analysis of \code{targets}, including dynamic branch inputs. No target metadata
 is read or modified by these factories.
@@ -90,7 +96,7 @@ cache <- shared_cache(tempfile("shared-cache-"))
 tar_shared(result, sum(data), cache)
 tar_shared(
   simulations, stats::rnorm(2), cache,
-  pattern = map(replicate_id), context = list(replicate = replicate_id)
+  pattern = map(replicate_id), branch_context = list(replicate = replicate_id)
 )
 tar_shared_raw("result", quote(sum(data)), cache)
 }

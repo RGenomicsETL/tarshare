@@ -24,25 +24,21 @@ jobs:
           extra-packages: |
             any::rcmdcheck
             any::roxygen2
-      - name: Generate public help from R sources
+      - name: Verify generated public help
         shell: Rscript {0}
         run: |
           roxygen2::roxygenise()
-          for (path in c("NAMESPACE", list.files("man", full.names = TRUE))) {
-            cat("\nDOCUMENT_BEGIN ", path, "\n", sep = "")
-            cat(readLines(path), sep = "\n")
-            cat("\nDOCUMENT_END\n")
-          }
+          status <- system2("git", c("diff", "--exit-code", "--", "NAMESPACE", "man"))
+          untracked <- system2("git", c("ls-files", "--others", "--exclude-standard", "man"), stdout = TRUE)
+          stopifnot(status == 0L, length(untracked) == 0L)
       - uses: r-lib/actions/check-r-package@v2
         with:
           args: 'c("--no-manual", "--as-cran")'
-      - name: Print complete check and tinytest logs
+      - name: Retain executed source and check logs
         if: always()
-        shell: Rscript {0}
-        run: |
-          paths <- list.files("..", pattern = "(00check[.]log|tinytest[.]Rout([.]fail)?)$", recursive = TRUE, full.names = TRUE)
-          for (path in paths) {
-            cat("\nLOG_BEGIN ", path, "\n", sep = "")
-            cat(readLines(path, warn = FALSE), sep = "\n")
-            cat("\nLOG_END\n")
-          }
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-${{ matrix.os }}
+          path: check/
+          retention-days: 14
+          if-no-files-found: warn

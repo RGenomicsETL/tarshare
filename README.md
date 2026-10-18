@@ -1,38 +1,17 @@
 # tarshare
 
-**Reuse declared computations across independent `targets` stores.**
+Reuse a computation across independent `targets` stores without copying their
+pipeline metadata. A new store, or a renamed output target, can retrieve an
+existing result when the declared computation identity is unchanged.
 
-Avoid rerunning the same expensive preprocessing or model-building step in a
-second project, even when its local store is empty or its output target is
-renamed. This is an experimental, opt-in computation cache, not a claim that
-arbitrary R expressions can be cached soundly without declared inputs.
+`targets` already provides content-addressed output storage and metadata sharing.
+For compatible copies of the same pipeline, those features may be sufficient.
+`tarshare` adds an **action-key lookup before the wrapped computation executes**;
+it does not replace the scheduler, dependency graph, or local target metadata.
+The runnable [native CAS example](inst/examples/native-cas-metadata.R) demonstrates
+the upstream alternative without using tarshare.
 
-`tarshare` is a GPL-3 R package for a shared filesystem cache. A cache entry is
-selected by a computation and its inputs, so changing a target name or starting
-with an empty `_targets` directory can still reuse the result. It supports R
-values and bundles of output files, with an explicit `tar_shared()` target
-factory and a standalone `shared_run()` interface.
-
-The motivation is the cross-run reuse described in
-[Seqera's Nextflow Global Cache announcement](https://seqera.io/blog/nextflow-global-cache/).
-`tarshare` implements an opt-in R interface. It does not replace the `targets`
-scheduler, import another pipeline's metadata, or provide Nextflow's cloud
-integration.
-
-## Install from source
-
-From a source checkout with the dependencies in `DESCRIPTION` installed:
-
-```sh
-R CMD INSTALL .
-```
-
-Repository: `RGenomicsETL/tarshare`. The initial implementation is under review;
-there is no released or production-qualified version yet.
-
-## Use with targets
-
-Create `_targets.R`:
+## Start with an ordinary pipeline
 
 ```r
 library(targets)
@@ -41,301 +20,241 @@ library(tarshare)
 cache <- shared_cache("/shared/r-cache")
 
 summarise_values <- function(x) {
-  message("Computing the summary")
+  message("Computing")
   c(mean = mean(x), spread = stats::sd(x))
 }
 
 list(
   tar_target(values, c(3, 5, 8, 13)),
-  tar_shared(summary, summarise_values(values), cache = cache)
+  tar_shared(summary, summarise_values(values), cache)
 )
 ```
 
-Run it with two independent local stores:
+Two fresh stores can reuse the wrapped computation:
 
 ```r
 targets::tar_make(store = "_targets_a")
 targets::tar_make(store = "_targets_b")
 ```
 
-The second store still dispatches the target wrapper and loads its dependencies.
-The wrapper can retrieve the shared result before running `summarise_values()`.
-A shared hit is therefore distinct from a native `targets` skipped target.
-Each store retains its own ordinary target metadata.
+The wrapper is still dispatched and its dependencies loaded on a shared hit.
+The target's own name and local store are excluded from the action key; arbitrary
+renaming or rewriting of command symbols is not semantic-equivalence analysis.
+See [independent-stores.R](inst/examples/independent-stores.R) for an executable
+example which verifies the number of actual computations.
 
-All participating workers need access to the same cache path. Choose a cache
-directory outside disposable per-run work directories.
+`shared_run(expression, cache)` provides the same reuse directly from R.
 
-## Use directly from R
+## Declare external state at graph construction
 
-```r
-library(tarshare)
+Arbitrary R code is not automatically hermetic. Code analysis captures referenced
+R values and helper functions, but cannot discover every environment variable,
+option, dynamic method, executable, network response, or database state.
 
-cache <- shared_cache(tempfile("shared-cache-"))
-values <- c(3, 5, 8, 13)
-
-first <- shared_run(mean(values), cache = cache)
-second <- shared_run(mean(values), cache = cache)
-stopifnot(identical(first, second))
-```
-
-Changing `values`, the command, or a referenced helper changes the computation's
-key. `shared_run()` captures the expression you pass; use the same expression
-when you want to look up the same computation.
-
-## File inputs and output bundles
-
-A plain character path is an ordinary R value. Wrap an input in `shared_file()`
-to declare that its content identifies the input independently of its location:
-
-```r
-input <- shared_file("data/measurements.txt")
-
-files <- shared_run(
-  {
-    x <- scan(input, quiet = TRUE)
-    summary <- c(n = length(x), mean = mean(x))
-    rds <- shared_path("summary.rds")
-    text <- shared_path("summary.txt")
-    saveRDS(summary, rds)
-    writeLines(format(summary), text)
-    c(rds = rds, text = text)
-  },
-  cache = cache,
-  format = "file"
-)
-```
-
-With no `id`, `shared_file()` hashes the file's content. If an input registry or
-upstream transfer already provides an immutable content identifier, reuse it:
-
-```r
-input <- shared_file(local_path, id = registered_sha256)
-```
-
-Supplying `id` avoids another input hashing pass. The caller owns the assertion
-that the identifier denotes the current bytes. IDs must be unambiguous within
-the cache; include the source/key when using provider-local version IDs.
-Use the same identifier for
-identical content at another path and a different identifier when content
-changes. Keep the `shared_file` value intact until the command consumes it.
-
-Location independence is an explicit contract. If a program uses a basename,
-sample label, directory name, or other path-derived information in its result,
-include that information in `context` or pass it as an ordinary dependency.
-
-For `format = "file"`, create outputs under `shared_path()` inside the command
-and return the complete character vector of paths needed by consumers. Include
-indexes and sidecars so local targets tracking can observe their loss. Directory
-outputs and all files beneath them are retained together. Existing files
-elsewhere cannot be imported by returning their paths, and arbitrary paths
-embedded inside R objects or file contents are not rebased.
-
-Hits return the cache's own files. Treat them as immutable; downstream commands
-write their own outputs. Files are not copied into each local targets store.
-Prefer `format = "file"` for large artifacts and complete portable file formats.
-Their byte identities do not depend on R serialization, but interpreting the
-bytes still requires compatible tools and schemas. An RDS written as a file
-is still an R-serialized object.
-
-Use `format = "rds"` for self-contained values in the keyed R/package environment,
-not as a cross-version persistence format. S3/S4 class and method providers
-must be declared in `packages` or `context` when not statically discovered. Live environments, connections
-and external pointers are unsupported as dependencies or outputs. Cached R
-outputs also cannot contain functions.
-
-## What determines reuse?
-
-The action key combines:
-
-- The captured command and statically discovered referenced dependency values.
-- Referenced helper definitions and their captured dependency values.
-- R runtime information and declared package identities.
-- Explicit `context`, output format, and the computation's `seed` argument.
-
-The target's own name, its local store name, and a `shared_file()` input's locator
-are excluded. An unchanged action can be reused by another target or store.
-This is syntactic and dependency-based equivalence; mathematically equivalent
-expressions need not produce the same key. Renaming input symbols can also
-change the key; only the output target name is excluded automatically.
-
-External state needs an explicit input. Declare relevant package names using
-`packages`, and use `context` for a container image digest, executable or model
-release, environment settings, or other information not represented by the R
-command and its dependencies:
+There are two invalidation decisions: local `targets` decides whether to dispatch
+the wrapper; the shared cache then decides whether its action key exists.
+Since 0.2.0, `tar_shared(context = ...)` is evaluated **when the graph is built**.
+Its canonical identity is embedded in the command, so changed declarations affect
+both decisions, including when the old local target would otherwise be skipped.
 
 ```r
 tar_shared(
   result,
-  transform_data(values),
-  cache = cache,
-  context = list(model = model_release, image = image_digest),
-  packages = c("myAnalysisPackage")
+  getOption("analysis.scale"),
+  cache,
+  context = shared_context(options = "analysis.scale")
 )
 ```
 
-Package versions do not identify independently replaced executables or mutable
-model files. Resolve those identities before constructing the computation.
-Automatic discovery follows static references. Dynamic `get()`/`eval()` and
-S3/S4 method selection can reach definitions it cannot see. Include custom
-methods in `context`, for example `context = list(method = my_generic.my_class)`.
-Declare their provider in `packages` when its version/build identifies the
-selected methods. Otherwise changed methods can reuse stale results. Declare
-options, locale, environment variables and external tools in `context` too.
-There is no correctness promise for undeclared dependencies. A nonempty
-`context` list does not prove that the declaration is complete.
+Without this declaration, changing that option can return a stale result. Prefer
+passing resolved values directly into your computation instead of reading ambient
+state again after the snapshot. Resources must remain immutable during execution.
 
-### A stale-result example and its correction
-
-This deliberately unsafe command reads an undeclared option. Changing the option
-does not change the action key:
+`shared_context()` accepts named values and snapshots selected options, nonsecret
+environment variables, locale, provider packages, and file contents:
 
 ```r
-cache <- shared_cache(tempfile("context-demo-"))
-options(tarshare.demo.scale = 2L)
-unsafe <- function() shared_run(getOption("tarshare.demo.scale"), cache)
-unsafe() # 2L
-options(tarshare.demo.scale = 3L)
-unsafe() # still 2L: the option value was not declared
-
-safe <- function() shared_run(
-  getOption("tarshare.demo.scale"), cache,
-  context = list(scale = getOption("tarshare.demo.scale"))
-)
-safe() # 3L
-options(tarshare.demo.scale = 4L)
-safe() # 4L
-options(tarshare.demo.scale = NULL)
-```
-
-A model file replaced at the same pathname or an executable replaced without
-changing its version string has the same failure mode. Use a content identity
-or immutable build/snapshot identifier, not merely a path or mutable tag.
-
-There are **two invalidation layers**: the local `targets` decision to dispatch
-the wrapper, then the shared action lookup. A call to `getOption()` or
-`Sys.getenv()` only inside `context` will not run when the local target is
-already skipped. Resolve external state into a tracked value when `_targets.R`
-is sourced, or use an upstream target with an appropriate refresh cue:
-
-```r
-execution <- list(scale = getOption("analysis.scale", 1L))
-list(
-  tar_target(values, c(3, 5, 8, 13)),
-  tar_shared(summary, mean(values) * execution$scale, cache,
-             context = execution)
+execution <- shared_context(
+  image = "immutable-image-digest",
+  database = "immutable-database-snapshot",
+  files = list(model = "model.rds", executable = "tool"),
+  options = "analysis.scale",
+  env = "MODEL_VARIANT",
+  locale = TRUE
 )
 ```
 
-Changes to that tracked `execution` value can invalidate both layers. Resolve
-file and executable identities at a trusted boundary without hashing large
-artifacts again inside every target.
+Ordinary files are hashed once per snapshot; `shared_file(path, id = immutable_id)`
+reuses an established identity without reading the bytes. Directory resources
+require explicit immutable IDs. A filename or unchanged version string does not
+identify a replaced model or executable. Declare dynamic S3/S4 method definitions
+or their provider packages explicitly. `packages` includes installed package and
+hard-dependency identities, not proof that same-version source was never altered.
+Never use credentials as scientific inputs or write them into context.
 
-## Randomness and deliberate recomputation
-
-The cache controls R's random stream using its key and `seed`. Keep explicit
-seeds supplied to scientific functions or external programs among the command's
-dependencies. For different random replicates, use distinct `seed` values or
-include a replicate identifier in `context`:
+Target-derived values are separate: use **`branch_context`** for upstream targets
+and dynamic branches. It remains an unevaluated expression visible to `targets`.
 
 ```r
-draw <- shared_run(
-  stats::rnorm(10),
-  cache = cache,
-  seed = 42L,
-  context = list(replicate = 1L)
+tar_shared(
+  draws, stats::rnorm(2), cache,
+  pattern = map(replicate_id),
+  branch_context = list(replicate = replicate_id)
 )
 ```
 
-`targets::tar_invalidate()` causes the local wrapper to run again; the same
-action key can still hit the shared cache. To request a new computation, change
-an explicit generation in `context`:
+For `tar_shared_raw()`, pass a resolved value to `context` and a quoted expression
+to `branch_context`. R version/platform, implementation version, declared provider
+identities, code, referenced inputs, and seed all participate in reuse. RNG uses
+a deterministic action-derived stream and restores the caller's state. Distinct
+replicates require distinct inputs, branch context, or seeds.
+
+## File bundles and R values
+
+For large portable artifacts, write the files and sidecars below `shared_path()`
+and return their paths or the complete bundle directory:
 
 ```r
-shared_run(mean(values), cache, context = list(generation = "rerun-2"))
+tar_shared(
+  bundle,
+  {
+    writeLines("data", shared_path("data.txt"))
+    writeLines("index", shared_path("data.idx"))
+    shared_path()
+  },
+  cache,
+  format = "file"
+)
 ```
 
-Keep that generation stable to reuse the deliberately recomputed result.
+Returned cache files are **immutable**: downstream steps write new outputs, never
+modify these paths. Relative layout, names, empty directories and sidecars are
+preserved. Symbolic links and outputs outside staging are rejected. Staging paths
+embedded inside file contents are not rewritten.
 
-## Storage and concurrency
+`format = "rds"` supports self-contained R values in the keyed execution
+environment. Live environments, external pointers, connections and output
+functions are rejected. Package-dependent objects still require compatible
+readers and method providers; neither RDS nor a file format guarantees that.
+An R object containing a temporary path does not preserve that file.
 
-Each key has a filesystem lock. A writer computes into a temporary staging
-directory and publishes a completed entry by renaming that directory. A failed
-computation does not publish a reusable entry. Competing writers for the same
-key wait for the lock and check for an existing result before computing.
+Plain character inputs remain ordinary values. `shared_file()` opts into
+content identity rather than physical-location identity. Only use that when
+output semantics do not depend on the filename; put meaningful labels in context.
 
-`shared_cache(path, verify = TRUE, timeout = Inf)` verifies cached file content
-on hits by default. Verification reads output bytes and can matter for large
-files. `verify = FALSE` skips per-hit content digest verification and assumes
-the cache is kept immutable. It does not change input identity.
+## Action index and content-addressed objects
 
-The filesystem must support the locking and same-filesystem rename operations
-used by the backend. Shared mounts need deployment-specific qualification.
-The existing tests exercise processes on one local host, not a multi-host NFS
-or SMB deployment. Lock support varies by filesystem and mount configuration;
-this backend does not implement a visibility-retry protocol. Filesystem locks
-alone do not establish distributed cache safety.
+The v2 filesystem layout separates:
 
-This version provides no cache garbage collection or removal API. Keep entries
-available while local targets metadata or downstream work refers to their files.
-Do not deploy an unbounded shared cache without an operator-owned capacity and
-retention plan. Do not apply one store's native CAS collector to this cache:
-it does not know the action index, other stores, or active file readers.
+- `actions/`: computation identity to content-object mapping;
+- `objects/`: immutable R values or complete file bundles addressed by content;
+- `native/`: a separate namespace for native targets CAS keys;
+- `refs/`: retained owner references; `locks/`: persistent lock paths;
+- `exports/`: disposable file copies supplied to external repositories.
 
-The backend stores one bundle per computation key. It does not deduplicate
-identical output bytes produced by different computation keys. See `REVIEW.md`
-for the CAS-integration and coordinated-retention work still required.
+Distinct actions producing identical serialized values or identical bundles can
+share one content object. The action is published only after its object is
+complete and readable. A crash between object and action publication leaves an
+unreferenced object, not a successful action. Missing or corrupt data cannot be a
+shared hit. Hard storage failures propagate rather than becoming successful work.
 
-## Relationship to targets CAS
-
-The native
-[`tar_repository_cas()` interface](https://docs.ropensci.org/targets/reference/tar_repository_cas.html)
-stores outputs by their content hashes. Its documentation describes sharing
-those objects together with `_targets/meta/meta` to preserve results across
-workflow checkouts. The metadata connects target definitions to saved outputs. `targets` also
-provides `tar_meta_upload()`, `tar_meta_download()`, and `tar_meta_sync()` for
-cloud metadata. Sharing compatible pipeline code, metadata, and retained CAS
-objects is already an upstream-supported reuse route; use it when that solves
-the problem.
-
-`tarshare` instead performs an explicit action lookup inside a scheduled
-command. This enables reuse with a fresh local metadata store, while adding its
-own computation key. It uses public target construction APIs and leaves
-`targets` metadata under `targets` control. It does not promise a transparent
-pre-dispatch cache lookup for an arbitrary existing pipeline.
-
-A native CAS adapter is not implemented yet. CAS upload/download/exists methods
-operate on output objects, not on pre-execution computation identities. A thin
-adapter still needs an action-to-object mapping. Its file handling must not
-move or remove the cache-owned files that other callers already hold.
-
-The upstream `consistent = FALSE` setting retries visibility checks on stores
-without strong read-after-write consistency; it does not provide distributed
-locking. The built-in `tar_repository_cas_local_gc()` collects against a single
-store's current metadata and explicitly may remove historical or colleagues'
-objects. Neither feature is a drop-in solution for cross-store retention.
-
-## Examples and development
-
-The installed examples use toy numeric data and create temporary directories:
+The public adapter composes with `targets::tar_repository_cas()`:
 
 ```r
-source(system.file("examples", "values-and-files.R", package = "tarshare"))
-source(system.file("examples", "independent-stores.R", package = "tarshare"))
+repository <- shared_repository(cache, consistent = FALSE)
+tar_shared(bundle, make_bundle(), cache, format = "file", repository = repository)
 ```
 
-Integration checks cover independent stores, renamed targets, changed upstream
-values, runtime context, dynamic branches, reproducible random streams, and file
-bundles. The supplied archive includes a historical local Linux check record
-(R 4.5.3, targets 1.12.0, 195 passing expectations). That record is not a check
-of this pull request. Newly added context-contract tests and current hosted
-checks must be reported separately. No throughput or distributed-filesystem
-performance claim is made.
+Other public CAS repositories are also accepted. A nonlocal file result is copied
+to private export staging before upload because a repository may move its input.
+Return the bundle directory or every sidecar; an incomplete export is rejected.
+The original shared object remains in place for other consumers.
 
-Future work includes cloud backends and a stable public `targets` runtime
-identity hook for integration before command dispatch. Those are outside the
-current filesystem interface.
+This ownership protection has an I/O cost: export localization reads and writes a
+full bundle; the copy-based adapter also copies it into native storage. Native
+keys are not silently equated with tarshare object hashes, so those namespaces can
+retain separate copies. This is not a zero-copy backend. `verify = TRUE` hashes
+cached file bytes on lookup. Disable it only when immutability is enforced
+externally; record integrity and bundle completeness are still checked.
 
-## License
+## Retention and explicit maintenance
 
-GPL-3.
+Every successful shared result is pinned for its owner before returning. The
+default owner is the running targets store, or the working directory for a
+standalone call; `shared_run(owner = ...)` can give another explicit identity.
+Native CAS lookup also registers a consumer when compatible metadata skips work.
+
+References accumulate deliberately, including history. Deleting a store does
+**not** prove that a report or another reader has finished with its files. Inspect
+`shared_references(cache)` and use `shared_retain(cache, keys, owner)` to preserve
+an action for an independent consumer before releasing its previous owner.
+
+```r
+shared_references(cache)
+
+# Stop pipelines and external readers first. Release only obsolete references.
+shared_release(cache, shared_owner(store = "/old/store"), quiescent = TRUE)
+plan <- shared_gc(cache) # preview: paths, reasons, bytes; deletes nothing
+removed <- shared_gc(cache, dry_run = FALSE, quiescent = TRUE)
+attr(removed, "removed_bytes")
+```
+
+Deletion requires explicit quiescence, not just a writer lock. The exclusive
+maintenance gate excludes in-flight operations; persistent references protect
+paths used after a wrapper returns. The assertion cannot detect unmanaged readers.
+Do not release an owner while its retained history still needs the outputs.
+
+Collection uses the union of owner references, aborts on invalid retained
+metadata, removes actions before unreachable objects, and can resume after
+interruption. Unpublished stages and export copies have an age grace. Lock files
+are never removed. The native single-store collector must not be pointed at this
+cache: it cannot see tarshare's retained references. Capacity monitoring and the
+maintenance schedule remain operator responsibilities; there is no automatic
+quota eviction or online garbage collector.
+
+## Shared filesystems and failure behavior
+
+All consumers of cache-owned paths need the same mounted path. The selected
+filesystem must support the locks and same-filesystem atomic rename used here.
+`timeout` bounds lock acquisition; `visibility_timeout` and `poll_interval` bound
+retries for a missing/incomplete entry. Atomic namespace publication is not a
+power-loss durability guarantee. NFS/SMB behavior depends on the actual server,
+client and mount configuration; one-host subprocess tests do not qualify it.
+
+The [two-host qualification harness](inst/qualification/README.md) exercises
+competing writers, different-key overlap, killed writers before/after publication,
+visibility and retained-reader maintenance. CI exercises the harness on one host
+and labels that result **same-host diagnostic only**. A real multi-host profile
+still needs its own execution record; no universal NFS safety is claimed.
+
+Use only a cache shared with trusted collaborators. R deserialization is not a
+sandbox, and filesystem permissions determine who can publish or alter objects.
+Cloud object storage, hostile-writer isolation and online reader leases are not
+implemented.
+
+## Migrating from the initial 0.1.0 prototype
+
+Recreate configurations with `shared_cache()`. The new backend uses `v2/`, leaving
+old `entries/` and locks untouched; it neither imports nor collects the old layout.
+Retire old cache data separately only when its consumers no longer require it.
+Move target/branch expressions from `context` to `branch_context`. External
+context now takes resolved graph-time values, including in the raw factory.
+
+## Development
+
+Tests are native **tinytest** scripts installed under `inst/tinytest/`, with the
+standard `tests/tinytest.R` entry point. No active testthat suite or compatibility
+wrapper remains. After installing the package:
+
+```r
+tinytest::test_package("tarshare")
+```
+
+Regenerate help from the R sources with `roxygen2::roxygenise()`, then run
+`R CMD build .` and `R CMD check --no-manual --as-cran tarshare_0.2.0.tar.gz`.
+CI checks Linux, Windows and macOS, verifies generated help is committed, and
+retains check artifacts. Historical prototype logs under `validation/original/`
+are not results for the current revision. See [REVIEW.md](REVIEW.md) for the review
+resolution and [NEWS.md](NEWS.md) for interface changes.
+
+License: GPL-3.

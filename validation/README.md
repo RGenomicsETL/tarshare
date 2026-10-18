@@ -1,15 +1,15 @@
-# Validation provenance
+# Validation records
 
-`original/` preserves the logs and environment record supplied with the original
-source archive. Those logs report a Linux check of the earlier source, not the
-current pull-request revision. The package's five runtime R files are unchanged
-from that archive; review additions are documentation and context-contract tests.
+`original/` preserves the initial 0.1.0 prototype checks. Those results do not
+validate subsequent runtime changes or the tinytest migration.
 
-Current local environment: no R or Rscript executable is installed. Runtime tests
-and R CMD check were not rerun locally. The pull request includes a GitHub Actions
-workflow for Linux, Windows, and macOS; consult the actual run status before
-claiming a pass for this revision. Static comparison of recovered runtime files
-and Git blob hashes is independent of executing the R test suite.
+Current GitHub Actions runs check the exact PR revision on Linux, Windows and
+macOS with `R CMD check --no-manual --as-cran`. The native tinytest runner exercises
+installed code and examples. Per-platform check artifacts retain the package
+source used, `00check.log`, and `tests/tinytest.Rout` (or `.fail`). Consult these
+artifacts and the commit identity rather than treating this file as a pass claim.
 
-No multi-host NFS/SMB, cloud-backend, capacity, retention, or throughput validation
-has been performed for this pull request.
+Generated help is produced by roxygen2 from `R/` and checked for drift. Filesystem
+qualification is separate: the CI harness result is explicitly same-host only.
+See `inst/qualification/README.md` for the two-host procedure. No actual NFS/SMB
+profile or large-artifact throughput result has been recorded here.

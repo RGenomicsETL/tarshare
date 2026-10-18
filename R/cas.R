@@ -81,9 +81,13 @@ shared_cas_exists <- function(key, cache) {
   id <- shared_native_key(key)
   gate <- shared_gate(cache)
   on.exit(shared_ungate(cache, gate), add = TRUE)
-  !is.null(shared_retry(cache, function() {
+  found <- !is.null(shared_retry(cache, function() {
     shared_object_read(shared_location(cache, "native", id), cache$verify)
   }))
+  # Compatible imported metadata can skip upload/download entirely. A successful
+  # lookup still registers this consumer before the original owner may release.
+  if (found) shared_pin(cache, shared_owner(store = targets::tar_path_store()), "native", id)
+  found
 }
 
 #' @rdname shared_repository

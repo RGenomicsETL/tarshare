@@ -10,7 +10,9 @@ shared_run(
   format = "rds",
   context = list(),
   seed = 0L,
-  packages = character()
+  packages = character(),
+  owner = shared_owner(),
+  localize = FALSE
 )
 }
 \arguments{
@@ -33,6 +35,14 @@ distinct input or context values, or a different \code{seed}.}
 
 \item{packages}{Additional installed packages whose versions should enter the
 key. Namespaced calls and functions' namespaces are discovered automatically.}
+
+\item{owner}{Retention owner. Defaults to the current targets store, or the
+working directory for standalone calls. References are cumulative until
+explicitly released with \code{\link[=shared_release]{shared_release()}}. Not part of the action key.}
+
+\item{localize}{Copy file outputs to disposable cache-local export staging.
+Used by the target factory for nonlocal repositories which may move inputs.
+Return the bundle directory or explicitly return every sidecar in this mode.}
 }
 \value{
 The R value or the cache-owned paths returned by the computation.

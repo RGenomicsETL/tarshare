@@ -4,7 +4,13 @@
 \alias{shared_cache}
 \title{Configure a shared filesystem cache}
 \usage{
-shared_cache(path, verify = TRUE, timeout = Inf)
+shared_cache(
+  path,
+  verify = TRUE,
+  timeout = Inf,
+  visibility_timeout = 0,
+  poll_interval = 0.05
+)
 }
 \arguments{
 \item{path}{Cache directory, independent of any individual targets store.}
@@ -15,6 +21,11 @@ integrity and bundle completeness are checked either way.}
 
 \item{timeout}{Seconds to wait for another process computing the same key.
 The default waits until the other process finishes or exits.}
+
+\item{visibility_timeout}{Maximum seconds to retry a missing or incomplete
+result after acquiring its lock. Zero is appropriate for a local filesystem.}
+
+\item{poll_interval}{Seconds between visibility retries.}
 }
 \value{
 A cache configuration object. Construction creates the directory.
