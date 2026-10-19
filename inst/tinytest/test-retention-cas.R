@@ -47,21 +47,21 @@ library(tarshare)
   expect_identical(list.files(file.path(root, "locks")), locks)
 })()
 
-# Abandoned stages have a grace period; old cache layouts are outside GC's scope.
+# Abandoned stages have a grace period; unrelated files are outside GC's scope.
 (function() {
   root <- tempfile("tarshare-stages-")
   on.exit(unlink(root, recursive = TRUE))
   cache <- shared_cache(root)
   stage <- tarshare:::shared_stage(cache, "objects")
   writeLines("partial", file.path(stage, "partial.txt"))
-  dir.create(file.path(root, "entries"))
-  writeLines("legacy", file.path(root, "entries", "old.txt"))
+  dir.create(file.path(root, "unrelated"))
+  writeLines("retain", file.path(root, "unrelated", "keep.txt"))
   expect_identical(nrow(shared_gc(cache)), 0L)
   plan <- shared_gc(cache, stage_age = 0)
   expect_identical(plan$reason, "abandoned-stage")
   shared_gc(cache, dry_run = FALSE, quiescent = TRUE, stage_age = 0)
   expect_false(dir.exists(stage))
-  expect_true(file.exists(file.path(root, "entries", "old.txt")))
+  expect_true(file.exists(file.path(root, "unrelated", "keep.txt")))
 })()
 
 # Crashing between object publication and action publication leaves an orphan, not a hit.
@@ -130,20 +130,27 @@ library(tarshare)
     script <- file.path(root, "_targets.R")
     counter <- file.path(root, "counter")
     native_path <- file.path(root, "native")
-    repository <- if (backend == "shared") "tarshare::shared_repository(cache)" else
-      paste0("targets::tar_repository_cas_local(", deparse(native_path), ")")
-    writeLines(c(
-      paste0("cache <- tarshare::shared_cache(", deparse(cache_path), ")"),
-      paste0("counter <- ", deparse(counter)),
-      "make_bundle <- function() {",
-      "  cat('computed\\n', file = counter, append = TRUE)",
-      "  writeLines('data', tarshare::shared_path('data.txt'))",
-      "  writeLines('sidecar', tarshare::shared_path('data.idx'))",
-      "  tarshare::shared_path()",
-      "}",
-      paste0("list(tarshare::tar_shared(result, make_bundle(), cache, format = 'file', ",
-             "repository = ", repository, ", packages = character()))")
-    ), script)
+    repository <- if (backend == "shared") {
+      quote(tarshare::shared_repository(cache))
+    } else {
+      bquote(targets::tar_repository_cas_local(.(native_path)))
+    }
+    pipeline <- bquote({
+      cache <- tarshare::shared_cache(.(cache_path))
+      counter <- .(counter)
+      make_bundle <- function() {
+        cat("computed\n", file = counter, append = TRUE)
+        writeLines("data", tarshare::shared_path("data.txt"))
+        writeLines("sidecar", tarshare::shared_path("data.idx"))
+        tarshare::shared_path()
+      }
+
+      list(tarshare::tar_shared(
+        result, make_bundle(), cache, format = "file",
+        repository = .(repository), packages = character()
+      ))
+    })
+    dput(pipeline, file = script)
     run <- function(store) targets::tar_make(script = script, store = store,
       callr_function = NULL, reporter = "silent", envir = new.env(parent = baseenv()))
     a <- file.path(root, "store-a")
