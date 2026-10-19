@@ -25,10 +25,18 @@ jobs:
             any::rcmdcheck
             any::roxygen2
             any::knitr
+      - name: Install tarshare before executing README
+        shell: Rscript {0}
+        run: |
+          status <- system2(file.path(R.home("bin"), "R"), c("CMD", "INSTALL", "."))
+          stopifnot(identical(as.integer(status), 0L))
+          stopifnot(requireNamespace("tarshare", quietly = TRUE))
       - name: Execute README.Rmd
         shell: Rscript {0}
         run: |
+          knitr::opts_chunk$set(error = FALSE)
           knitr::knit("README.Rmd", output = "README.md", quiet = TRUE)
+          stopifnot(!any(grepl("## Error", readLines("README.md"), fixed = TRUE)))
       - name: Commit rendered README on branch push
         if: github.event_name == 'push' && github.ref == 'refs/heads/feat/initial-package-reviewed'
         shell: bash
