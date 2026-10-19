@@ -1,0 +1,243 @@
+---
+title: "Get started with tarshare"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Get started with tarshare}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+tarshare lets independent `targets` pipelines reuse each other's results
+through one shared cache directory. This vignette builds two small projects
+that have never seen each other, points them at the same cache, and shows the
+second one skipping the work the first one did.
+
+## A cache
+
+A cache is a directory that every pipeline can reach at the same path, usually
+on shared storage. `shared_cache()` creates its layout and returns a small
+configuration object that pipelines pass to `tar_shared()`. This vignette uses
+a temporary directory so that it cleans up after itself.
+
+```{r}
+library(targets)
+library(tarshare)
+
+root <- tempfile("tarshare-vignette-")
+dir.create(root)
+cache_path <- file.path(root, "cache")
+cache <- shared_cache(cache_path)
+list.files(cache_path)
+```
+
+## Project A
+
+A `_targets.R` that uses tarshare looks like any other, except that the step
+worth sharing is declared with `tar_shared()` instead of `tar_target()`. It
+takes the same name and command, plus the cache.
+
+The vignette writes its scripts with `targets::tar_helper()`, which lets it
+substitute the temporary cache path with `!!`. In a real project you would
+simply type the path.
+
+```{r}
+script_a <- file.path(root, "project-a", "_targets.R")
+dir.create(dirname(script_a))
+tar_helper(script_a, {
+  library(targets)
+  library(tarshare)
+
+  cache <- shared_cache(!!cache_path)
+
+  summarise_values <- function(x) {
+    cat("summarise_values() is running\n")
+    c(mean = mean(x), spread = stats::sd(x))
+  }
+
+  list(
+    tar_target(values, c(3, 5, 8, 13)),
+    tar_shared(summary, summarise_values(values), cache)
+  )
+})
+```
+
+Run it in its own store:
+
+```{r}
+store_a <- file.path(root, "project-a", "_targets")
+tar_make(script = script_a, store = store_a)
+```
+
+targets dispatched both targets as usual. For `summary`, tarshare printed a
+`compute` line: nothing in the cache matched, so the command ran, printed its
+own line, and the result was stored. The twelve hexadecimal characters after
+`compute` are the start of the computation key.
+
+```{r}
+tar_read(summary, store = store_a)
+```
+
+## Project B
+
+Project B is a different pipeline in a different directory with its own
+store. It calls the target `summary_stats`, but the computation is the same:
+the same helper applied to the same values.
+
+```{r}
+script_b <- file.path(root, "project-b", "_targets.R")
+dir.create(dirname(script_b))
+tar_helper(script_b, {
+  library(targets)
+  library(tarshare)
+
+  cache <- shared_cache(!!cache_path)
+
+  summarise_values <- function(x) {
+    cat("summarise_values() is running\n")
+    c(mean = mean(x), spread = stats::sd(x))
+  }
+
+  list(
+    tar_target(values, c(3, 5, 8, 13)),
+    tar_shared(summary_stats, summarise_values(values), cache)
+  )
+})
+
+store_b <- file.path(root, "project-b", "_targets")
+tar_make(script = script_b, store = store_b)
+```
+
+This time tarshare printed `hit` with the same key. The helper did not run,
+and project B's store now holds the result that project A computed:
+
+```{r}
+tar_read(summary_stats, store = store_b)
+```
+
+Project B never read project A's metadata, and project A does not know that
+project B exists. The only thing they share is the cache directory.
+
+## What happened
+
+`tar_shared()` is a target factory. It returns an ordinary target whose
+command is `shared_run(<your command>, cache, ...)`. When targets dispatches
+that target it loads `values` as it would for any target, then evaluates the
+wrapper, which:
+
+1. computes a key from the command's code, the values and functions it refers
+   to, the packages involved, the declared context and the seed;
+2. looks for that key in the cache's `actions/` directory;
+3. on a hit, restores the stored result; on a miss, evaluates the command
+   under a lock for that key and publishes the result.
+
+targets then stores the value in its own store exactly as it would have done
+without tarshare. The usual skipping still applies: run project B again and
+targets does not even dispatch the target, so tarshare is not consulted.
+
+```{r}
+tar_make(script = script_b, store = store_b)
+```
+
+## The same cache from a plain R session
+
+`shared_run()` is the function underneath `tar_shared()`, and a script can
+call it directly with the same cache. The first call computes and stores,
+and any later call with the same code and inputs is a hit:
+
+```{r}
+values <- c(3, 5, 8, 13)
+summarise_values <- function(x) {
+  cat("summarise_values() is running\n")
+  c(mean = mean(x), spread = stats::sd(x))
+}
+shared_run(summarise_values(values), cache)
+```
+
+Each hit or computation is signalled by a message of class `tarshare_event`.
+Handle it to log what the cache did:
+
+```{r}
+log_events <- function(expr) {
+  withCallingHandlers(expr, tarshare_event = function(e) {
+    cat("cache:", e$event, "\n")
+    invokeRestart("muffleMessage")
+  })
+}
+log_events(shared_run(summarise_values(values), cache))
+```
+
+A `tar_shared()` target also folds a fingerprint of its declared `context`
+into its key, so a plain `shared_run()` call and a pipeline target do not
+share entries with each other even when their code is identical. Sharing
+happens between pipelines, or between scripts that call `shared_run()` the
+same way.
+
+## When the code changes
+
+Change the helper in project B so that it also reports the median. targets
+notices that a dependency of `summary_stats` changed and dispatches it; the
+key changes with the code, so tarshare computes:
+
+```{r}
+tar_helper(script_b, {
+  library(targets)
+  library(tarshare)
+
+  cache <- shared_cache(!!cache_path)
+
+  summarise_values <- function(x) {
+    cat("summarise_values() is running\n")
+    c(mean = mean(x), median = stats::median(x), spread = stats::sd(x))
+  }
+
+  list(
+    tar_target(values, c(3, 5, 8, 13)),
+    tar_shared(summary_stats, summarise_values(values), cache)
+  )
+})
+tar_make(script = script_b, store = store_b)
+```
+
+Nothing is overwritten. Put the original helper back and the run is a hit
+again, because the earlier result is still in the cache:
+
+```{r}
+tar_helper(script_b, {
+  library(targets)
+  library(tarshare)
+
+  cache <- shared_cache(!!cache_path)
+
+  summarise_values <- function(x) {
+    cat("summarise_values() is running\n")
+    c(mean = mean(x), spread = stats::sd(x))
+  }
+
+  list(
+    tar_target(values, c(3, 5, 8, 13)),
+    tar_shared(summary_stats, summarise_values(values), cache)
+  )
+})
+tar_make(script = script_b, store = store_b)
+```
+
+Results accumulate until somebody runs maintenance deliberately. The
+`vignette("operations")` guide explains who holds a result and how
+unreferenced data is removed.
+
+## Where next
+
+- `vignette("identity")` explains exactly what goes into the key, why an
+  undeclared option or file can produce a stale hit, and how `context`,
+  `branch_context` and `shared_file()` fix that.
+- `vignette("files")` covers results that are files rather than R values.
+- `vignette("operations")` covers the cache layout, owners, garbage collection,
+  the targets CAS adapter and shared filesystem requirements.
+
+```{r, include = FALSE}
+unlink(root, recursive = TRUE)
+```

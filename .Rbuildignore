@@ -5,3 +5,7 @@
 ^tarshare_.*\.tar\.gz$
 ^REVIEW\.md$
 ^README\.Rmd$
+^_pkgdown\.yml$
+^docs$
+^pkgdown$
+^vignettes/\.gitignore$

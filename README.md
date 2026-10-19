@@ -13,13 +13,20 @@ instead of running it again. That holds even when the other pipeline lives in a
 different project, keeps its own `_targets/` store, and calls the target by a
 different name.
 
+The [package website](https://rgenomicsetl.github.io/tarshare/) has the function
+reference and four guides: [Get started](https://rgenomicsetl.github.io/tarshare/articles/tarshare.html),
+[What makes two computations the same](https://rgenomicsetl.github.io/tarshare/articles/identity.html),
+[File outputs and inputs](https://rgenomicsetl.github.io/tarshare/articles/files.html) and
+[Operating a shared cache](https://rgenomicsetl.github.io/tarshare/articles/operations.html).
+This README is the short version.
+
 ## Why not plain targets?
 
 `targets` already skips work inside one store, and
 [`tar_repository_cas()`](https://docs.ropensci.org/targets/reference/tar_repository_cas.html)
 together with copied metadata can share results between *compatible copies* of
 one pipeline. That route needs no tarshare, and the shipped
-[native CAS example](inst/examples/native-cas-metadata.R) shows it working.
+[native CAS example](https://github.com/RGenomicsETL/tarshare/blob/main/inst/examples/native-cas-metadata.R) shows it working.
 
 tarshare is for stores that are not copies of each other: different projects,
 different target names, or pipelines that have only some steps in common. For
@@ -409,7 +416,7 @@ durability guarantee.
 
 NFS and SMB behaviour depends on the server, the client and the mount
 options. The package ships a
-[two-host qualification harness](inst/qualification/README.md) that exercises
+[two-host qualification harness](https://github.com/RGenomicsETL/tarshare/blob/main/inst/qualification/README.md) that exercises
 competing writers, killed writers, visibility and retained readers. CI runs it
 on a single host only, which proves the harness, not any particular deployment.
 
@@ -435,7 +442,11 @@ CI renders it on Linux, Windows and macOS and fails if the committed
 `roxygen2::roxygenise()` and fails on drift, then runs
 `R CMD check --no-manual --as-cran`.
 
-[REVIEW.md](REVIEW.md) records the design decisions and validation boundaries
-from the initial review. [NEWS.md](NEWS.md) lists releases.
+The guides are vignettes under `vignettes/`. They run their examples when the
+package is built, and pkgdown publishes them to the site on every push to
+`main`.
+
+[REVIEW.md](https://github.com/RGenomicsETL/tarshare/blob/main/REVIEW.md) records the design decisions and validation boundaries
+from the initial review. [NEWS.md](https://github.com/RGenomicsETL/tarshare/blob/main/NEWS.md) lists releases.
 
 License: GPL-3.

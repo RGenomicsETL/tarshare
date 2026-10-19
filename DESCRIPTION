@@ -13,6 +13,8 @@ Description: Reuse computations across independent 'targets' stores through an
     atomic publication. Uses public 'targets' interfaces without editing pipeline
     metadata.
 License: GPL-3
+URL: https://rgenomicsetl.github.io/tarshare/, https://github.com/RGenomicsETL/tarshare
+BugReports: https://github.com/RGenomicsETL/tarshare/issues
 Encoding: UTF-8
 Depends: R (>= 4.1.0)
 Imports:
@@ -26,6 +28,9 @@ Imports:
     vctrs
 Suggests:
     callr,
+    knitr,
+    rmarkdown,
     tinytest (>= 1.4.1)
+VignetteBuilder: knitr
 Roxygen: list(markdown = TRUE)
 RoxygenNote: 7.3.3

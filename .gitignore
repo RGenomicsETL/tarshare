@@ -4,3 +4,5 @@
 _targets/
 *.Rcheck/
 tarshare_*.tar.gz
+docs/
+inst/doc/

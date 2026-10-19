@@ -1,0 +1,298 @@
+---
+title: "What makes two computations the same"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{What makes two computations the same}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+A shared cache is only as good as its notion of "the same computation". This
+vignette shows what tarshare puts into a computation key, what it cannot see,
+and how to declare the rest. Every example prints `computing` when the
+command really runs, so a missing line means a hit.
+
+```{r}
+library(targets)
+library(tarshare)
+
+root <- tempfile("tarshare-identity-")
+dir.create(root)
+cache_path <- file.path(root, "cache")
+cache <- shared_cache(cache_path)
+```
+
+## What is in the key
+
+The key is a SHA-256 of:
+
+- the command's code as an abstract syntax tree, with source references
+  stripped;
+- the values of the variables and the code of the functions that the command
+  refers to, found by static analysis with `codetools` and followed
+  recursively through your own functions;
+- the versions of the packages involved: the namespaces of functions the
+  command uses, `pkg::fun` references, their hard dependencies, and anything
+  named in `packages`;
+- the `format`, the declared `context` and the `seed`;
+- the R version and platform, and the tarshare version.
+
+Not in the key: the target name, the store, the working directory, the time,
+and the retention owner.
+
+### Formatting does not matter, symbols do
+
+```{r}
+x <- c(3, 5, 8, 13)
+summarise <- function(v) { cat("computing\n"); c(mean(v), stats::sd(v)) }
+shared_run(summarise(x), cache)
+```
+
+Rewrite the helper with different layout and a comment. The abstract syntax
+tree is unchanged, so the second call is a hit:
+
+```{r}
+summarise <- function(v) {
+  # The same code, laid out differently.
+  cat("computing\n")
+  c(mean(v), stats::sd(v))
+}
+shared_run(summarise(x), cache)
+```
+
+Refer to the same data through a different name and the command's code is
+different, so the key is different:
+
+```{r}
+y <- x
+shared_run(summarise(y), cache)
+```
+
+tarshare compares code, not meaning. It does not try to prove that two
+different expressions compute the same thing.
+
+### Referenced values and helpers are followed
+
+Change one input value and the key changes:
+
+```{r}
+x[1] <- 4
+shared_run(summarise(x), cache)
+```
+
+Helpers called by the helper are followed too. `summarise()` has not changed
+here, but a function it calls has:
+
+```{r}
+centre <- function(v) mean(v)
+summarise <- function(v) { cat("computing\n"); c(centre(v), stats::sd(v)) }
+shared_run(summarise(x), cache)
+
+centre <- function(v) stats::median(v)
+shared_run(summarise(x), cache)
+```
+
+### Packages
+
+A function from an installed package is identified by its package and
+version rather than by its code, and the same goes for `pkg::fun` references.
+If your command chooses a package at run time, for example through a method
+registered by another package, name it in `packages` so its version joins the
+key. `shared_context()` does the same for method providers.
+
+### Random numbers
+
+Random draws inside a shared command come from a stream seeded from the key,
+so a hit returns exactly the draws that were stored, and two sessions that
+compute the same key draw the same numbers:
+
+```{r}
+shared_run(stats::rnorm(3), cache)
+shared_run(stats::rnorm(3), cache)
+```
+
+`seed` is part of the key. Use it to ask for an independent replicate of an
+otherwise identical computation:
+
+```{r}
+shared_run(stats::rnorm(3), cache, seed = 1)
+```
+
+The caller's random number generator is left as it was:
+
+```{r}
+set.seed(42)
+before <- stats::runif(1)
+set.seed(42)
+invisible(shared_run(stats::rnorm(5), cache))
+after <- stats::runif(1)
+identical(before, after)
+```
+
+## What the key cannot see
+
+Static analysis records the code that reads an option, but not the option's
+value. The second call below is a hit, and the result is stale:
+
+```{r}
+options(analysis.scale = 2)
+scale_values <- function(v) { cat("computing\n"); v * getOption("analysis.scale") }
+shared_run(scale_values(x), cache)
+
+options(analysis.scale = 10)
+shared_run(scale_values(x), cache)
+```
+
+The same applies to environment variables, the locale, executables found on
+the path, files opened by name, network and database state, and S3 or S4
+methods chosen by dispatch.
+
+### Pass values in, or declare them
+
+The simplest fix is to resolve the state outside the command and pass it in as
+a value. A referenced variable is part of the key:
+
+```{r}
+scale_by <- function(v, scale) { cat("computing\n"); v * scale }
+scale <- getOption("analysis.scale")
+shared_run(scale_by(x, scale), cache)
+```
+
+When the state has to stay inside the command, declare it in `context`.
+`shared_context()` snapshots the option's value, and the snapshot is part of
+the key:
+
+```{r}
+shared_run(scale_values(x), cache, context = shared_context(options = "analysis.scale"))
+```
+
+`shared_context()` returns a plain list that you can inspect. Besides options
+it takes named immutable values, file contents, non-secret environment
+variables, provider packages and the locale:
+
+```{r}
+model_file <- file.path(root, "model.rds")
+saveRDS(list(coefficients = c(1.5, -0.2)), model_file)
+Sys.setenv(ANALYSIS_VARIANT = "reference")
+
+execution <- shared_context(
+  image = "sha256:3f1a...",
+  files = list(model = model_file),
+  options = "analysis.scale",
+  env = "ANALYSIS_VARIANT",
+  locale = TRUE
+)
+str(execution, max.level = 2)
+```
+
+A declaration is an assertion by its owner. A version label such as
+`"model 2.1"` does not identify a replaced file, so declare the contents or an
+immutable id instead. Never put credentials in context: targets writes the
+generated command into its metadata.
+
+### Files
+
+A plain path is just a string. The file behind it can change without changing
+the key:
+
+```{r}
+path <- file.path(root, "measurements.txt")
+writeLines(c("3", "5", "8", "13"), path)
+read_mean <- function(p) { cat("computing\n"); mean(scan(p, quiet = TRUE)) }
+shared_run(read_mean(path), cache)
+
+writeLines(c("30", "50"), path)
+shared_run(read_mean(path), cache)
+```
+
+`shared_file()` wraps a path in a descriptor whose identity is the SHA-256 of
+the contents. It still works as a path:
+
+```{r}
+input <- shared_file(path)
+shared_run(read_mean(input), cache)
+```
+
+Replace the contents and the key changes:
+
+```{r}
+writeLines(c("1", "2"), path)
+input <- shared_file(path)
+shared_run(read_mean(input), cache)
+```
+
+Move the file and the key does not change, because the contents did not:
+
+```{r}
+moved <- file.path(root, "moved.txt")
+invisible(file.rename(path, moved))
+input <- shared_file(moved)
+shared_run(read_mean(input), cache)
+```
+
+If a trusted hash or an immutable version id already exists, pass it as `id`
+and the file is not read. Directories always need an explicit id. See
+`vignette("files")` for descriptors with several paths.
+
+## Context in a pipeline
+
+In `tar_shared()`, `context` is evaluated once while `_targets.R` runs to
+build the graph. tarshare embeds a fingerprint of it in the generated command,
+so a change in declared context invalidates the local target in the ordinary
+targets way, and the shared key changes with it. Declare ambient state there:
+
+```r
+tar_shared(
+  scaled, scale_values(values), cache,
+  context = shared_context(options = "analysis.scale")
+)
+```
+
+Values that come from other targets are different: they do not exist yet when
+the graph is built. Put them in `branch_context`, which stays an expression
+that targets can see. The pipeline below draws two numbers per replicate. The
+replicate id is in the branch context, so each branch has its own key and its
+own draws:
+
+```{r}
+script <- file.path(root, "_targets.R")
+tar_helper(script, {
+  library(targets)
+  library(tarshare)
+  cache <- shared_cache(!!cache_path)
+  list(
+    tar_target(replicate, 1:3),
+    tar_shared(
+      draws, stats::rnorm(2), cache,
+      pattern = map(replicate),
+      branch_context = list(replicate = replicate)
+    )
+  )
+})
+tar_make(script = script, store = file.path(root, "store-1"))
+tar_read(draws, store = file.path(root, "store-1"))
+```
+
+A second store runs the same pipeline and hits all three branches:
+
+```{r}
+tar_make(script = script, store = file.path(root, "store-2"))
+```
+
+Without `branch_context`, the three branches would share one key and one set
+of draws, because nothing else distinguishes them. The same is true of
+replicates that differ only in a loop index: give them distinct branch
+context or distinct seeds.
+
+`tar_shared_raw()` is the programmatic form. It takes a resolved value for
+`context` and a quoted expression for `branch_context`.
+
+```{r, include = FALSE}
+options(analysis.scale = NULL)
+Sys.unsetenv("ANALYSIS_VARIANT")
+unlink(root, recursive = TRUE)
+```
