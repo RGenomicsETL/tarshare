@@ -38,11 +38,15 @@ library(tarshare)
   dir.create(root)
   on.exit(unlink(root, recursive = TRUE))
   script <- file.path(root, "_targets.R")
-  writeLines(c(
-    paste0("cache <- tarshare::shared_cache(", deparse(file.path(root, "cache")), ")"),
-    "list(tarshare::tar_shared(result, getOption('tarshare.test.scale'), cache,",
-    "  context = list(scale = getOption('tarshare.test.scale')), packages = character()))"
-  ), script)
+  pipeline <- bquote({
+    cache <- tarshare::shared_cache(.(file.path(root, "cache")))
+    list(tarshare::tar_shared(
+      result, getOption("tarshare.test.scale"), cache,
+      context = list(scale = getOption("tarshare.test.scale")),
+      packages = character()
+    ))
+  })
+  dput(pipeline, file = script)
   old <- options(tarshare.test.scale = 2L)
   on.exit(options(old), add = TRUE)
   run <- function(store) targets::tar_make(script = script, store = store,
@@ -68,13 +72,18 @@ library(tarshare)
   on.exit(unlink(root, recursive = TRUE))
   resource <- file.path(root, "model-or-executable")
   script <- file.path(root, "_targets.R")
-  writeLines(c(
-    paste0("resource <- ", deparse(resource)),
-    paste0("cache <- tarshare::shared_cache(", deparse(file.path(root, "cache")), ")"),
-    "list(tarshare::tar_shared(result, readLines(resource), cache,",
-    "  context = tarshare::shared_context(version = 'unchanged', files = list(tool = resource)),",
-    "  packages = character()))"
-  ), script)
+  pipeline <- bquote({
+    resource <- .(resource)
+    cache <- tarshare::shared_cache(.(file.path(root, "cache")))
+    list(tarshare::tar_shared(
+      result, readLines(resource), cache,
+      context = tarshare::shared_context(
+        version = "unchanged", files = list(tool = resource)
+      ),
+      packages = character()
+    ))
+  })
+  dput(pipeline, file = script)
   run <- function(store) targets::tar_make(script = script, store = store,
     callr_function = NULL, reporter = "silent", envir = new.env(parent = baseenv()))
   a <- file.path(root, "a")
