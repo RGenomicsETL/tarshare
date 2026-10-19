@@ -8,26 +8,25 @@ cache_path <- file.path(example_root, "cache")
 counter_path <- file.path(example_root, "computations.txt")
 
 write_pipeline <- function(path, target_name) {
-  writeLines(
-    c(
-      "library(targets)",
-      "library(tarshare)",
-      paste0("cache <- shared_cache(", encodeString(cache_path, quote = '"'), ")"),
-      paste0("counter <- ", encodeString(counter_path, quote = '"')),
-      "summarise_values <- function(x) {",
-      "  cat('computed\\n', file = counter, append = TRUE)",
-      "  c(mean = mean(x), spread = stats::sd(x))",
-      "}",
-      "list(",
-      "  tar_target(values, c(3, 5, 8, 13)),",
-      paste0(
-        "  tar_shared(", target_name,
-        ", summarise_values(values), cache = cache)"
-      ),
-      ")"
-    ),
-    path
-  )
+  # Construct an R expression, not fragments of R source code.
+  pipeline <- bquote({
+    library(targets)
+    library(tarshare)
+
+    cache <- shared_cache(.(cache_path))
+    counter <- .(counter_path)
+
+    summarise_values <- function(x) {
+      cat("computed\n", file = counter, append = TRUE)
+      c(mean = mean(x), spread = stats::sd(x))
+    }
+
+    list(
+      tar_target(values, c(3, 5, 8, 13)),
+      tar_shared(.(as.name(target_name)), summarise_values(values), cache)
+    )
+  })
+  dput(pipeline, file = path)
 }
 
 script_a <- file.path(example_root, "pipeline-a.R")
