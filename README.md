@@ -19,20 +19,8 @@ the upstream alternative without using tarshare.
 ``` r
 library(targets)
 library(tarshare)
-```
-
-```
-## Error in `library()`:
-## ! there is no package called 'tarshare'
-```
-
-``` r
 source(system.file("examples/independent-stores.R", package = "tarshare"), local = TRUE)
-```
-
-```
-## Error in `source()`:
-## ! empty file/url name
+cache <- shared_cache(file.path(example_root, "cache"))
 ```
 
 The previous evaluated example runs two fresh stores and proves only one computation was performed. This additional assertion also executes:
@@ -40,11 +28,6 @@ The previous evaluated example runs two fresh stores and proves only one computa
 
 ``` r
 stopifnot(identical(first, second), identical(readLines(counter_path), "computed"))
-```
-
-```
-## Error:
-## ! object 'first' not found
 ```
 
 The wrapper is still dispatched and its dependencies loaded on a shared hit.
@@ -63,7 +46,7 @@ option, dynamic method, executable, network response, or database state.
 
 There are two invalidation decisions: local `targets` decides whether to dispatch
 the wrapper; the shared cache then decides whether its action key exists.
-Since 0.2.0, `tar_shared(context = ...)` is evaluated **when the graph is built**.
+`tar_shared(context = ...)` is evaluated **when the graph is built**.
 Its canonical identity is embedded in the command, so changed declarations affect
 both decisions, including when the old local target would otherwise be skipped.
 
@@ -71,29 +54,8 @@ both decisions, including when the old local target would otherwise be skipped.
 ``` r
 options(analysis.scale = 2)
 scale_context <- shared_context(options = "analysis.scale")
-```
-
-```
-## Error in `shared_context()`:
-## ! could not find function "shared_context"
-```
-
-``` r
 stopifnot(length(scale_context) > 0L)
-```
-
-```
-## Error:
-## ! object 'scale_context' not found
-```
-
-``` r
 target_definition <- tar_shared(result, getOption("analysis.scale"), cache, context = scale_context)
-```
-
-```
-## Error in `tar_shared()`:
-## ! could not find function "tar_shared"
 ```
 
 Without this declaration, changing that option can return a stale result. Prefer
@@ -106,41 +68,9 @@ environment variables, locale, provider packages, and file contents:
 
 ``` r
 model_file <- file.path(example_root, "model.rds")
-```
-
-```
-## Error:
-## ! object 'example_root' not found
-```
-
-``` r
 tool_file <- file.path(example_root, "tool")
-```
-
-```
-## Error:
-## ! object 'example_root' not found
-```
-
-``` r
 saveRDS(list(model = "example"), model_file)
-```
-
-```
-## Error:
-## ! object 'model_file' not found
-```
-
-``` r
 writeLines("example executable identity", tool_file)
-```
-
-```
-## Error:
-## ! object 'tool_file' not found
-```
-
-``` r
 Sys.setenv(MODEL_VARIANT = "reference")
 execution <- shared_context(
   image = "immutable-image-digest",
@@ -148,20 +78,7 @@ execution <- shared_context(
   files = list(model = model_file, executable = tool_file),
   options = "analysis.scale", env = "MODEL_VARIANT", locale = TRUE
 )
-```
-
-```
-## Error in `shared_context()`:
-## ! could not find function "shared_context"
-```
-
-``` r
 stopifnot(length(execution) > 0L)
-```
-
-```
-## Error:
-## ! object 'execution' not found
 ```
 
 Ordinary files are hashed once per snapshot; `shared_file(path, id = immutable_id)`
@@ -184,11 +101,6 @@ branch_definition <- tar_shared(
 )
 ```
 
-```
-## Error in `tar_shared()`:
-## ! could not find function "tar_shared"
-```
-
 For `tar_shared_raw()`, pass a resolved value to `context` and a quoted expression
 to `branch_context`. R version/platform, implementation version, declared provider
 identities, code, referenced inputs, and seed all participate in reuse. RNG uses
@@ -206,22 +118,9 @@ bundle_paths <- shared_run({
   writeLines("index", shared_path("data.idx"))
   shared_path()
 }, cache, format = "file")
-```
-
-```
-## Error in `shared_run()`:
-## ! could not find function "shared_run"
-```
-
-``` r
 stopifnot(dir.exists(bundle_paths),
           file.exists(file.path(bundle_paths, "data.txt")),
           file.exists(file.path(bundle_paths, "data.idx")))
-```
-
-```
-## Error:
-## ! object 'bundle_paths' not found
 ```
 
 Returned cache files are **immutable**: downstream steps write new outputs, never
@@ -241,7 +140,7 @@ output semantics do not depend on the filename; put meaningful labels in context
 
 ## Action index and content-addressed objects
 
-The v2 filesystem layout separates:
+The filesystem cache separates:
 
 - `actions/`: computation identity to content-object mapping;
 - `objects/`: immutable R values or complete file bundles addressed by content;
@@ -260,38 +159,9 @@ The public adapter composes with `targets::tar_repository_cas()`. The executed e
 
 ``` r
 repository <- shared_repository(cache, consistent = FALSE)
-```
-
-```
-## Error in `shared_repository()`:
-## ! could not find function "shared_repository"
-```
-
-``` r
 source(system.file("examples/native-cas-metadata.R", package = "tarshare"), local = TRUE)
-```
-
-```
-## Error in `source()`:
-## ! empty file/url name
-```
-
-``` r
 native_result <- native_cas_metadata_example()
-```
-
-```
-## Error in `native_cas_metadata_example()`:
-## ! could not find function "native_cas_metadata_example"
-```
-
-``` r
 stopifnot(identical(native_result$computations, 1L))
-```
-
-```
-## Error:
-## ! object 'native_result' not found
 ```
 
 Other public CAS repositories are also accepted. A nonlocal file result is copied
@@ -321,33 +191,14 @@ an action for an independent consumer before releasing its previous owner.
 
 ``` r
 references <- shared_references(cache)
-```
-
-```
-## Error in `shared_references()`:
-## ! could not find function "shared_references"
-```
-
-``` r
 plan <- shared_gc(cache) # nondestructive preview
-```
-
-```
-## Error in `shared_gc()`:
-## ! could not find function "shared_gc"
-```
-
-``` r
 stopifnot(is.data.frame(plan))
 ```
 
-```
-## Error:
-## ! object 'plan' not found
-```
-
-Actual deletion is intentionally not part of the README example: after stopping readers and releasing obsolete owners, call `shared_gc(cache, dry_run = FALSE, quiescent = TRUE)`. Deletion requires explicit quiescence, not just a writer lock. The exclusive
-maintenance gate excludes in-flight operations; persistent references protect
+Actual deletion is intentionally not part of the README example. After stopping
+readers and releasing obsolete owners, call
+`shared_gc(cache, dry_run = FALSE, quiescent = TRUE)`. Deletion requires explicit
+quiescence, not just a writer lock. The exclusive maintenance gate excludes in-flight operations; persistent references protect
 paths used after a wrapper returns. The assertion cannot detect unmanaged readers.
 Do not release an owner while its retained history still needs the outputs.
 
@@ -379,32 +230,18 @@ sandbox, and filesystem permissions determine who can publish or alter objects.
 Cloud object storage, hostile-writer isolation and online reader leases are not
 implemented.
 
-## Migrating from the initial 0.1.0 prototype
-
-Recreate configurations with `shared_cache()`. The new backend uses `v2/`, leaving
-old `entries/` and locks untouched; it neither imports nor collects the old layout.
-Retire old cache data separately only when its consumers no longer require it.
-Move target/branch expressions from `context` to `branch_context`. External
-context now takes resolved graph-time values, including in the raw factory.
-
 ## Development
 
-Tests are native **tinytest** scripts installed under `inst/tinytest/`, with the
-standard `tests/tinytest.R` entry point. No active testthat suite or compatibility
-wrapper remains. After installing the package:
-
-
-``` r
-stopifnot(requireNamespace("tinytest", quietly = TRUE))
-```
+The native **tinytest** suite is installed under `inst/tinytest/` and runs through
+`tests/tinytest.R` during `R CMD check`. Run `tinytest::test_package("tarshare")`
+for an installed package.
 
 `README.md` is generated by evaluating all R chunks in `README.Rmd` with `knitr::knit('README.Rmd', 'README.md')`. CI checks that the committed output matches. Examples use temporary stores and fixtures, never a production cache.
 
 Regenerate help from the R sources with `roxygen2::roxygenise()`, then run
-`R CMD build .` and `R CMD check --no-manual --as-cran tarshare_0.2.0.tar.gz`.
+`R CMD build .` and `R CMD check --no-manual --as-cran tarshare_0.1.0.tar.gz`.
 CI checks Linux, Windows and macOS, verifies generated help is committed, and
-retains check artifacts. Historical prototype logs under `validation/original/`
-are not results for the current revision. See [REVIEW.md](REVIEW.md) for the review
-resolution and [NEWS.md](NEWS.md) for interface changes.
+retains check artifacts. See [REVIEW.md](REVIEW.md) for design and validation
+boundaries and [NEWS.md](NEWS.md) for the initial feature summary.
 
 License: GPL-3.
