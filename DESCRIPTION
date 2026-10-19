@@ -1,6 +1,6 @@
 Package: tarshare
 Title: Share Computation Results Across 'targets' Pipelines
-Version: 0.2.0
+Version: 0.1.0
 Authors@R: c(
     person("Sounkou Mahamane", "Toure", email = "sounkoutoure@gmail.com",
            role = c("aut", "cre")),

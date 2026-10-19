@@ -4,4 +4,3 @@
 ^.*\.Rcheck$
 ^tarshare_.*\.tar\.gz$
 ^REVIEW\.md$
-^validation$

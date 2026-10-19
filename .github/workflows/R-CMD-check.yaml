@@ -38,7 +38,7 @@ jobs:
           knitr::knit("README.Rmd", output = "README.md", quiet = TRUE)
           stopifnot(!any(grepl("## Error", readLines("README.md"), fixed = TRUE)))
       - name: Commit rendered README on branch push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/initial-package-reviewed'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/initial-package-reviewed' && matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           if ! git diff --quiet -- README.md; then

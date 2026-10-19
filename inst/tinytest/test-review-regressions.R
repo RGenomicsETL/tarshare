@@ -54,7 +54,7 @@ library(tarshare)
   }
   environment(collect) <- hook
   expect_error(collect(cache, dry_run = FALSE, quiescent = TRUE), "interrupted collection")
-  expect_length(list.dirs(file.path(root, "v2", "objects"), recursive = FALSE), 2L)
+  expect_length(list.dirs(file.path(root, "objects"), recursive = FALSE), 2L)
   result <- shared_gc(cache, dry_run = FALSE, quiescent = TRUE)
   expect_true(all(result$removed))
   expect_identical(nrow(shared_gc(cache)), 0L)

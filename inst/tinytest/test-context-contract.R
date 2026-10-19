@@ -28,8 +28,8 @@ library(tarshare)
   cache <- shared_cache(root)
   expect_identical(suppressMessages(shared_run(1L + 1L, cache)), 2L)
   expect_identical(suppressMessages(shared_run(2L, cache)), 2L)
-  expect_length(list.dirs(file.path(root, "v2", "actions"), recursive = FALSE), 2L)
-  expect_length(list.dirs(file.path(root, "v2", "objects"), recursive = FALSE), 1L)
+  expect_length(list.dirs(file.path(root, "actions"), recursive = FALSE), 2L)
+  expect_length(list.dirs(file.path(root, "objects"), recursive = FALSE), 1L)
 })()
 
 # Context is now eager even when the command reads ambient state directly.

@@ -115,7 +115,7 @@ cache_events <- function(code) {
   expect_error(suppressMessages(run()), "computation failed")
   expect_error(suppressMessages(run()), "computation failed")
   expect_length(list.files(cache$path, pattern = "^complete$", recursive = TRUE), 0L)
-  expect_length(list.files(file.path(cache$path, "v2", "objects"),
+  expect_length(list.files(file.path(cache$path, "objects"),
                           pattern = "^.stage-", recursive = TRUE, all.files = TRUE), 0L)
 })()
 

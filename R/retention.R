@@ -142,7 +142,7 @@ shared_release <- function(cache, owner, keys = NULL, quiescent = FALSE) {
 #'   removed status. Attributes `selected_bytes` and `removed_bytes` give totals.
 #' @details Pins survive local store deletion and keep history until explicitly
 #'   released. Invalid pin/action metadata aborts collection before any deletion.
-#'   Lock files and old layout directories are never removed. Interrupted
+#'   Lock files are never removed. Interrupted
 #'   collection may leave orphan objects, which the next invocation can collect.
 #' @export
 shared_gc <- function(cache, dry_run = TRUE, quiescent = FALSE, stage_age = 3600) {

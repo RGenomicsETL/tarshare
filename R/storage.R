@@ -1,6 +1,5 @@
-# Versioned layout: old caches remain untouched, including during collection.
 shared_location <- function(cache, kind, key = NULL) {
-  root <- file.path(cache$path, "v2", kind)
+  root <- file.path(cache$path, kind)
   if (is.null(key)) root else file.path(root, key)
 }
 
@@ -85,7 +84,7 @@ shared_read_record <- function(path, expected = NULL) {
 
 shared_object_read <- function(path, verify, expected = NULL) {
   record <- shared_read_record(path, expected)
-  if (is.null(record) || !identical(record$schema, 2L) ||
+  if (is.null(record) || !identical(record$schema, 1L) ||
       !isTRUE(record$format %in% c("rds", "file"))) return(NULL)
   if (identical(record$format, "file") &&
       !shared_bundle_valid(path, record$bundle, verify)) return(NULL)

@@ -131,9 +131,9 @@ shared_test_write_branches <- function(project, cache, name, values) {
     )
   }
 
-  write_project("v1")
+  write_project("alpha")
   shared_test_make(project)
-  write_project("v2")
+  write_project("beta")
   shared_test_make(project)
   expect_identical(shared_test_calls(project), 2L)
   expect_identical(shared_test_read(project, "result"), 7L)

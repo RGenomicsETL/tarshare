@@ -35,7 +35,7 @@ shared_cache <- function(path, verify = TRUE, timeout = Inf,
   path <- path.expand(path)
   shared_mkdir(path)
   for (kind in c("actions", "objects", "native", "refs", "locks", "exports")) {
-    shared_mkdir(file.path(path, "v2", kind))
+    shared_mkdir(file.path(path, kind))
   }
   structure(
     list(path = normalizePath(path, winslash = "/"), verify = verify, timeout = timeout,
@@ -124,7 +124,7 @@ shared_run <- function(command, cache, format = "rds", context = list(),
     shared_mkdir(file.path(stage, "files"))
     shared_event("compute", key)
     value <- shared_compute(expr, envir, identity$seed, stage, format)
-    record <- list(schema = 2L, format = format)
+    record <- list(schema = 1L, format = format)
     if (identical(format, "file")) {
       record$bundle <- shared_bundle(value, file.path(stage, "files"))
     } else {
@@ -135,9 +135,12 @@ shared_run <- function(command, cache, format = "rds", context = list(),
     object_path <- shared_location(cache, "objects", object)
     object_lock <- shared_lock(cache, paste0("object-", object))
     tryCatch({
-      if (is.null(shared_object_read(object_path, cache$verify, object))) {
-        shared_publish(stage, object_path)
-      }
+      # A preceding writer for a different action may have published this
+      # content on another host. Honor visibility retries while holding its lock.
+      existing <- shared_retry(cache, function() {
+        shared_object_read(object_path, cache$verify, object)
+      })
+      if (is.null(existing)) shared_publish(stage, object_path)
     }, finally = filelock::unlock(object_lock))
     # Publish the action only after the complete content object is readable.
     restored <- shared_retry(cache, function() {
@@ -147,7 +150,7 @@ shared_run <- function(command, cache, format = "rds", context = list(),
     if (is.null(restored)) shared_storage_error("Published object is not readable.")
     action_stage <- shared_stage(cache, "actions")
     on.exit(unlink(action_stage, recursive = TRUE), add = TRUE, after = FALSE)
-    shared_write_record(list(schema = 2L, key = key, object = object,
+    shared_write_record(list(schema = 1L, key = key, object = object,
                              format = format), action_stage)
     shared_publish(action_stage, shared_location(cache, "actions", key))
   } else {
@@ -181,7 +184,7 @@ shared_compute <- function(expr, envir, seed, stage, format) {
 
 shared_restore <- function(cache, key, format) {
   action <- shared_read_record(shared_location(cache, "actions", key))
-  if (is.null(action) || !identical(action$schema, 2L) ||
+  if (is.null(action) || !identical(action$schema, 1L) ||
       !identical(action$key, key) || !identical(action$format, format) ||
       !shared_is_key(action$object)) return(NULL)
   path <- shared_location(cache, "objects", action$object)

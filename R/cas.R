@@ -44,12 +44,13 @@ shared_cas_upload <- function(key, path, cache) {
   lock <- shared_lock(cache, paste0("native-", id))
   on.exit(filelock::unlock(lock), add = TRUE, after = FALSE)
   entry <- shared_location(cache, "native", id)
-  if (is.null(shared_object_read(entry, cache$verify))) {
+  existing <- shared_retry(cache, function() shared_object_read(entry, cache$verify))
+  if (is.null(existing)) {
     stage <- shared_stage(cache, "native")
     on.exit(unlink(stage, recursive = TRUE), add = TRUE, after = FALSE)
     to <- file.path(stage, "files", "payload")
     shared_copy_path(path, to)
-    record <- list(schema = 2L, format = "file", native_key = key,
+    record <- list(schema = 1L, format = "file", native_key = key,
                    bundle = shared_bundle(to, file.path(stage, "files")))
     shared_write_record(record, stage)
     shared_publish(stage, entry)

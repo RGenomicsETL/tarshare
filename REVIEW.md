@@ -8,8 +8,8 @@ has been qualified. The package name and GPL-3 license are unchanged.
 `tar_shared(context = ...)` resolves external state while constructing the graph.
 Its canonical identity enters both the local command and the shared key.
 `branch_context` keeps target-derived expressions visible to targets. The raw
-factory rejects quoted external context, which previously could stay unevaluated
-when local targets skipped the wrapper.
+factory requires resolved external context, while branch expressions remain
+unevaluated for local dependency tracking.
 
 `shared_context()` snapshots selected file contents or established content IDs,
 options, nonsecret environment values, locale and provider identities. Explicit
@@ -57,7 +57,7 @@ retained-reader maintenance, recording host/system/package/profile identities.
 CI tests this harness on one host only. **Real multi-host NFS/SMB qualification
 remains open until that exact profile is run and its reports inspected.**
 
-## Corrections retained from the initial review
+## Design decisions
 
 Native CAS and metadata sharing already exist. A computation-key index is a
 different capability, not a replacement for them. `consistent = FALSE` controls
@@ -77,5 +77,5 @@ Upstream contracts:
 
 Current tests are under `inst/tinytest/`; CI runs the exact branch revision on
 Linux, Windows and macOS. Check artifacts contain executed test and package logs.
-`validation/original/` preserves the prototype record only. Passing CI is not a
+Passing CI is not a
 multi-host qualification result or a throughput benchmark.
