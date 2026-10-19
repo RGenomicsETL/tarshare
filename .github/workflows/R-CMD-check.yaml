@@ -4,7 +4,7 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   check:
@@ -35,19 +35,11 @@ jobs:
         shell: Rscript {0}
         run: |
           knitr::opts_chunk$set(error = FALSE)
+          source <- readLines("README.Rmd", warn = FALSE)
+          stopifnot(length(grep("^\x60\x60\x60\\{r", source)) > 0L)
+          stopifnot(!any(grepl("eval[[:space:]]*=[[:space:]]*(FALSE|0)", source)))
           knitr::knit("README.Rmd", output = "README.md", quiet = TRUE)
           stopifnot(!any(grepl("## Error", readLines("README.md"), fixed = TRUE)))
-      - name: Commit rendered README on branch push
-        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/initial-package-reviewed' && matrix.os == 'ubuntu-latest'
-        shell: bash
-        run: |
-          if ! git diff --quiet -- README.md; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add README.md
-            git commit -m "docs: render evaluated README.Rmd"
-            git push
-          fi
       - name: Verify README matches evaluated source
         shell: bash
         run: |
