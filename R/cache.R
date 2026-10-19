@@ -135,12 +135,9 @@ shared_run <- function(command, cache, format = "rds", context = list(),
     object_path <- shared_location(cache, "objects", object)
     object_lock <- shared_lock(cache, paste0("object-", object))
     tryCatch({
-      # A preceding writer for a different action may have published this
-      # content on another host. Honor visibility retries while holding its lock.
-      existing <- shared_retry(cache, function() {
-        shared_object_read(object_path, cache$verify, object)
-      })
-      if (is.null(existing)) shared_publish(stage, object_path)
+      if (is.null(shared_object_read(object_path, cache$verify, object))) {
+        shared_publish(stage, object_path)
+      }
     }, finally = filelock::unlock(object_lock))
     # Publish the action only after the complete content object is readable.
     restored <- shared_retry(cache, function() {

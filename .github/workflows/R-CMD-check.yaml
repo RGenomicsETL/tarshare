@@ -4,7 +4,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   check:
@@ -24,6 +24,26 @@ jobs:
           extra-packages: |
             any::rcmdcheck
             any::roxygen2
+            any::knitr
+      - name: Execute README.Rmd
+        shell: Rscript {0}
+        run: |
+          knitr::knit("README.Rmd", output = "README.md", quiet = TRUE)
+      - name: Commit rendered README on branch push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/feat/initial-package-reviewed'
+        shell: bash
+        run: |
+          if ! git diff --quiet -- README.md; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add README.md
+            git commit -m "docs: render evaluated README.Rmd"
+            git push
+          fi
+      - name: Verify README matches evaluated source
+        shell: bash
+        run: |
+          git diff --exit-code -- README.md
       - name: Verify generated public help
         shell: Rscript {0}
         run: |
