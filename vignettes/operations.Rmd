@@ -1,0 +1,244 @@
+---
+title: "Operating a shared cache"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{Operating a shared cache}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+This vignette is for whoever looks after the cache directory: what is in it,
+who holds on to a result, how space is reclaimed, how the cache doubles as a
+targets repository, and what the filesystem has to provide.
+
+```{r}
+library(targets)
+library(tarshare)
+
+root <- tempfile("tarshare-operations-")
+dir.create(root)
+cache_path <- file.path(root, "cache")
+cache <- shared_cache(cache_path)
+list.files(cache_path)
+```
+
+## Layout
+
+- `actions/` maps a computation key to a content object.
+- `objects/` holds the results, addressed by a hash of their content.
+- `native/` holds objects stored through the targets CAS interface.
+- `refs/` holds one retention reference per owner and key.
+- `locks/` holds lock files. They are never removed.
+- `exports/` holds disposable copies handed to external repositories.
+
+Actions and objects are separate so that different computations with the
+same result share one object:
+
+```{r}
+shared_run(1 + 1, cache)
+shared_run(2 + 0, cache)
+length(list.files(file.path(cache_path, "actions")))
+length(list.files(file.path(cache_path, "objects")))
+```
+
+An action is published only after its object is complete and readable, and
+both publications are atomic renames. A crash in between leaves an
+unreferenced object, never a half-written hit. Missing or corrupt data is a
+miss, and a hard storage error is raised rather than hidden behind a
+recomputation.
+
+## Owners and references
+
+Every result that `shared_run()` returns is first pinned for an owner. In a
+pipeline the owner is the store; in a plain session it is the working
+directory; `shared_run(owner = ...)` names any other identity. Run one
+pipeline in two stores to see two owners holding one key:
+
+```{r}
+script <- file.path(root, "_targets.R")
+tar_helper(script, {
+  library(targets)
+  library(tarshare)
+  cache <- shared_cache(!!cache_path)
+  list(
+    tar_target(values, c(3, 5, 8, 13)),
+    tar_shared(total, sum(values), cache)
+  )
+})
+store_a <- file.path(root, "store-a")
+store_b <- file.path(root, "store-b")
+tar_make(script = script, store = store_a)
+tar_make(script = script, store = store_b)
+
+owner_a <- shared_owner(store_a)
+owner_b <- shared_owner(store_b)
+refs <- shared_references(cache)
+refs[refs$owner %in% c(owner_a, owner_b), c("owner", "kind")]
+```
+
+The two in-session calls above were pinned for the working directory, so the
+cache currently has three owners. References are cumulative. Deleting a store
+does not release anything, because a deleted store proves nothing about
+reports or other pipelines that may still be reading the files:
+
+```{r}
+unlink(store_a, recursive = TRUE)
+plan <- shared_gc(cache)
+nrow(plan)
+```
+
+`shared_gc()` is a dry run by default. An empty plan means everything is
+still referenced.
+
+## Releasing and collecting
+
+Release an owner when its pipeline, its history and anyone reading its files
+are finished. `quiescent = TRUE` is that assertion:
+
+```{r}
+shared_release(cache, owner_a, quiescent = TRUE)
+nrow(shared_gc(cache))
+```
+
+Still nothing to collect, because store B holds the same key. Release it too
+and the action becomes a candidate, together with its object:
+
+```{r}
+shared_release(cache, owner_b, quiescent = TRUE)
+plan <- shared_gc(cache)
+plan[c("kind", "reason", "bytes")]
+```
+
+Collection needs the same assertion. It validates every remaining reference
+and action first, then removes actions before objects, so an interruption
+leaves orphans for the next run rather than dangling actions:
+
+```{r}
+collected <- shared_gc(cache, dry_run = FALSE, quiescent = TRUE)
+attr(collected, "removed_bytes")
+length(list.files(file.path(cache_path, "actions")))
+```
+
+The maintenance lock keeps other tarshare operations out while collection
+runs, but it cannot see a process that is still reading a path it was handed
+earlier. Pins are the only protection for such readers, which is why
+`quiescent` is an explicit argument rather than a default.
+
+### Keeping a result for someone else
+
+A consumer that is not a pipeline, such as a report that keeps reading a
+bundle, can hold its own pin so that releasing the producing store does not
+expose the files to collection:
+
+```{r}
+refs <- shared_references(cache)
+key <- refs$key[refs$kind == "actions"][1]
+shared_retain(cache, key, owner = "report:quarterly")
+shared_references(cache)[c("owner", "kind")]
+```
+
+### Abandoned staging
+
+A writer that dies before publishing leaves a `.stage-*` directory behind.
+Such directories are collected once they are older than `stage_age`, one hour
+by default. The example forces that with `stage_age = 0`:
+
+```{r}
+crashed <- file.path(cache_path, "objects", ".stage-crashed-writer")
+dir.create(crashed)
+writeLines("partial", file.path(crashed, "partial"))
+shared_gc(cache, stage_age = 0)[c("kind", "reason")]
+```
+
+There is no automatic schedule, quota or eviction. Monitoring capacity and
+running collection are operator tasks.
+
+## The cache as a targets repository
+
+`shared_repository()` exposes the cache through `targets::tar_repository_cas()`,
+so ordinary targets can store their objects in it. Those objects are keyed by
+targets' own content hashes and live in `native/`, apart from tarshare's
+action keys:
+
+```{r}
+script_cas <- file.path(root, "_targets_cas.R")
+tar_helper(script_cas, {
+  library(targets)
+  library(tarshare)
+  cache <- shared_cache(!!cache_path)
+  tar_option_set(repository = shared_repository(cache))
+  list(
+    tar_target(values, c(3, 5, 8, 13)),
+    tar_target(total, sum(values))
+  )
+})
+store_cas <- file.path(root, "store-cas")
+tar_make(script = script_cas, store = store_cas)
+length(list.files(file.path(cache_path, "native")))
+table(shared_references(cache)$kind)
+```
+
+Native objects are pinned for their store like shared results, and
+`shared_gc()` collects them when unreferenced. Do not point
+`targets::tar_repository_cas_local_gc()` at this cache: it reasons from one
+store's metadata and cannot see pins held by other stores.
+
+`tar_shared(..., repository = ...)` composes with any public CAS repository.
+A file result is first copied to `exports/` because a repository may move
+what it is given, and the copy-based adapter copies it again into `native/`.
+This protects cache-owned files at the price of extra I/O. It is not a
+zero-copy backend.
+
+### When tarshare is not needed
+
+Compatible copies of one pipeline can already share results with targets
+alone: use a CAS repository and copy the `meta/` directory between stores, as
+version control would. The package ships that example:
+
+```{r}
+source(system.file("examples", "native-cas-metadata.R", package = "tarshare"))
+native <- native_cas_metadata_example(file.path(root, "native-example"))
+native$computations
+```
+
+tarshare adds the lookup by computation key for stores that are not copies of
+each other. It does not replace this route.
+
+## Shared filesystems
+
+Every consumer must see the cache at the same mounted path, since cached file
+paths are handed out as they are. The filesystem must support the advisory
+locks used by the filelock package and atomic rename within the cache
+directory. Three settings on `shared_cache()` bound the waits:
+
+- `timeout`: seconds to wait for another process computing the same key.
+  The default waits until it finishes.
+- `visibility_timeout` and `poll_interval`: how long and how often to retry
+  an entry that another host has published but this host cannot see yet.
+  Zero is right for a local filesystem.
+
+```r
+cache <- shared_cache("/shared/tarshare-cache", timeout = 3600,
+                      visibility_timeout = 5, poll_interval = 0.5)
+```
+
+Atomic publication is not a power-loss durability guarantee, and NFS or SMB
+behaviour depends on the server, the client and the mount options. The
+package ships a two-host qualification harness under
+`system.file("qualification", package = "tarshare")`. Run it on two real
+hosts against the intended mount and keep its reports before relying on that
+deployment. The package's own CI runs it on one host, which exercises the
+harness and nothing more.
+
+Share a cache only with trusted collaborators. Reading an R object from the
+cache is a deserialisation, not a sandbox, and anyone who can write to the
+directory can publish or alter results. Cloud object storage and online
+reader leases are not implemented.
+
+```{r, include = FALSE}
+unlink(root, recursive = TRUE)
+```

@@ -1,0 +1,43 @@
+url: https://rgenomicsetl.github.io/tarshare/
+
+template:
+  bootstrap: 5
+  light-switch: true
+
+navbar:
+  structure:
+    left: [intro, reference, articles, news]
+    right: [search, github, lightswitch]
+
+articles:
+- title: Guides
+  navbar: ~
+  contents:
+  - identity
+  - files
+  - operations
+
+reference:
+- title: Declare shared computations
+  desc: Wrap a target or an expression so its result is looked up before it runs.
+  contents:
+  - tar_shared
+  - shared_run
+- title: Cache and repositories
+  desc: Configure the shared directory and expose it through the targets CAS interface.
+  contents:
+  - shared_cache
+  - shared_repository
+- title: Inputs and context
+  desc: Declare what the computation depends on beyond its code.
+  contents:
+  - shared_context
+  - shared_file
+  - shared_file_vector
+  - shared_path
+- title: Retention and maintenance
+  desc: Who holds a result, and how unreferenced data is removed.
+  contents:
+  - shared_owner
+  - shared_references
+  - shared_gc

@@ -1,0 +1,212 @@
+---
+title: "File outputs and inputs"
+output: rmarkdown::html_vignette
+vignette: >
+  %\VignetteIndexEntry{File outputs and inputs}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(collapse = TRUE, comment = "#>")
+```
+
+Many expensive steps produce files rather than R values: alignments, index
+files, model checkpoints, rendered reports. This vignette shows how a shared
+computation writes files, how they come back on a hit, and how to identify
+input files by their contents.
+
+```{r}
+library(targets)
+library(tarshare)
+
+root <- tempfile("tarshare-files-")
+dir.create(root)
+cache_path <- file.path(root, "cache")
+cache <- shared_cache(cache_path)
+```
+
+## Writing files
+
+Use `format = "file"` and write every output below `shared_path()`. Inside a
+file computation, `shared_path("name")` returns a path in a private staging
+directory and creates any parent directories. Return the paths you want back,
+or `shared_path()` for the whole directory:
+
+```{r}
+values <- c(3, 5, 8, 13)
+paths <- shared_run({
+  cat("computing\n")
+  summary <- c(n = length(values), mean = mean(values))
+  saveRDS(summary, shared_path("summary.rds"))
+  writeLines(format(summary), shared_path("summary.txt"))
+  writeLines("summary.rds summary.txt", shared_path("MANIFEST"))
+  c(rds = shared_path("summary.rds"), text = shared_path("summary.txt"))
+}, cache, format = "file")
+basename(paths)
+readRDS(paths[["rds"]])
+```
+
+The returned paths point into the cache, not into staging. The whole staging
+directory was stored, so the manifest travelled with the two files you asked
+for even though it was not returned:
+
+```{r}
+list.files(dirname(paths[["rds"]]))
+```
+
+A hit returns the same paths without running the command:
+
+```{r}
+paths_again <- shared_run({
+  cat("computing\n")
+  summary <- c(n = length(values), mean = mean(values))
+  saveRDS(summary, shared_path("summary.rds"))
+  writeLines(format(summary), shared_path("summary.txt"))
+  writeLines("summary.rds summary.txt", shared_path("MANIFEST"))
+  c(rds = shared_path("summary.rds"), text = shared_path("summary.txt"))
+}, cache, format = "file")
+identical(paths, paths_again)
+```
+
+## The files belong to the cache
+
+Cached files are immutable by contract: downstream steps read them and write
+their own outputs elsewhere. The cache does not change file permissions to
+enforce this, but with the default `verify = TRUE` every lookup re-hashes the
+bundle. A bundle that no longer matches its record is treated as missing, the
+command runs again, and the damaged entry is replaced:
+
+```{r}
+writeLines("edited in place", paths[["text"]])
+paths <- shared_run({
+  cat("computing\n")
+  summary <- c(n = length(values), mean = mean(values))
+  saveRDS(summary, shared_path("summary.rds"))
+  writeLines(format(summary), shared_path("summary.txt"))
+  writeLines("summary.rds summary.txt", shared_path("MANIFEST"))
+  c(rds = shared_path("summary.rds"), text = shared_path("summary.txt"))
+}, cache, format = "file")
+readLines(paths[["text"]])
+```
+
+Turn verification off only when something else guarantees immutability, such
+as a read-only export of the cache. Record integrity and bundle completeness
+are checked either way.
+
+Outputs must be created inside staging. A path from anywhere else is
+rejected before anything is published:
+
+```{r}
+tryCatch(
+  shared_run({
+    elsewhere <- tempfile()
+    writeLines("x", elsewhere)
+    elsewhere
+  }, cache, format = "file"),
+  error = conditionMessage
+)
+```
+
+Symbolic links inside the bundle are rejected too, and the cache never
+rewrites file contents, so avoid writing the staging path into a file.
+
+## Values that are not self-contained
+
+The default `format = "rds"` is for values that can be serialised and read
+back on their own. Live resources are refused:
+
+```{r}
+tryCatch(shared_run(new.env(), cache), error = conditionMessage)
+```
+
+An R object that merely contains a path does not preserve the file behind the
+path. Write such files through `format = "file"` instead.
+
+## File targets in a pipeline
+
+In a pipeline, a `format = "file"` shared target behaves like a targets file
+target: its value is the vector of cache paths, and downstream targets use
+them like any other file. The pipeline below writes a table and counts its
+rows:
+
+```{r}
+script <- file.path(root, "_targets.R")
+tar_helper(script, {
+  library(targets)
+  library(tarshare)
+  cache <- shared_cache(!!cache_path)
+  list(
+    tar_target(values, c(3, 5, 8, 13)),
+    tar_shared(values_table, {
+      path <- shared_path("values.csv")
+      utils::write.csv(data.frame(value = values), path, row.names = FALSE)
+      path
+    }, cache, format = "file"),
+    tar_target(n_rows, nrow(utils::read.csv(values_table)))
+  )
+})
+store_1 <- file.path(root, "store-1")
+tar_make(script = script, store = store_1)
+tar_read(n_rows, store = store_1)
+```
+
+A second store gets the table from the cache. The cheap downstream target
+still runs, because it is an ordinary target in a fresh store:
+
+```{r}
+store_2 <- file.path(root, "store-2")
+tar_make(script = script, store = store_2)
+identical(tar_read(values_table, store = store_1), tar_read(values_table, store = store_2))
+```
+
+Because the shared target has `format = "file"`, targets also watches the
+cache files, and the usual skipping applies while they are unchanged.
+
+## Identifying input files
+
+A plain character path is an ordinary value: the key records the string, not
+the file. `shared_file()` replaces it with a descriptor that carries a content
+hash per path and still works as a path. See `vignette("identity")` for why
+this matters.
+
+```{r}
+sample_a <- file.path(root, "sample-a.txt")
+sample_b <- file.path(root, "sample-b.txt")
+writeLines(c("3", "5"), sample_a)
+writeLines(c("8", "13"), sample_b)
+inputs <- shared_file(c(a = sample_a, b = sample_b))
+inputs
+```
+
+Descriptors keep names, order and ids together under subsetting and
+concatenation, so a pipeline can pass them around as it would any paths:
+
+```{r}
+inputs["b"]
+c(inputs["b"], inputs["a"])
+```
+
+Replacement is refused: rebuild the descriptor with `shared_file()` when a path
+changes. `as.character()` drops the ids and gives back ordinary paths.
+
+Hashing a large file on every graph construction is wasteful when an
+immutable identity already exists, such as a hash from a sample sheet or an
+object version. Pass it as `id` and the file is not read:
+
+```{r}
+registered <- shared_file(sample_a, id = "sha256:established-upstream")
+attr(registered, "tarshare_id")
+```
+
+Supplying an id is an assertion that the id describes the bytes used. The
+cache does not check it. Directories cannot be hashed automatically and always
+need an explicit id.
+
+Use content identity only when the result does not depend on the file's name
+or location. If a name carries meaning, such as a sample label, declare it in
+`context` as well.
+
+```{r, include = FALSE}
+unlink(root, recursive = TRUE)
+```
