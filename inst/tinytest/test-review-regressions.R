@@ -15,13 +15,19 @@ library(tarshare)
   dir.create(root)
   on.exit(unlink(root, recursive = TRUE))
   script <- file.path(root, "_targets.R")
-  write <- function(offset) writeLines(c(
-    paste0("cache <- tarshare::shared_cache(", deparse(file.path(root, "cache")), ")"),
-    "calculate <- function(x) UseMethod('calculate')",
-    paste0("calculate.item <- function(x) unclass(x) + ", offset, "L"),
-    "list(tarshare::tar_shared(result, calculate(structure(1L, class = 'item')), cache,",
-    "  context = tarshare::shared_context(method = calculate.item), packages = character()))"
-  ), script)
+  write <- function(offset) {
+    pipeline <- bquote({
+      cache <- tarshare::shared_cache(.(file.path(root, "cache")))
+      calculate <- function(x) UseMethod("calculate")
+      calculate.item <- function(x) unclass(x) + .(offset)
+      list(tarshare::tar_shared(
+        result, calculate(structure(1L, class = "item")), cache,
+        context = tarshare::shared_context(method = calculate.item),
+        packages = character()
+      ))
+    })
+    dput(pipeline, file = script)
+  }
   run <- function(store) targets::tar_make(script = script, store = store,
     callr_function = NULL, reporter = "silent", envir = new.env(parent = baseenv()))
   a <- file.path(root, "a")
@@ -90,10 +96,13 @@ library(tarshare)
   on.exit(unlink(root, recursive = TRUE))
   script <- file.path(root, "_targets.R")
   path <- file.path(root, "cache")
-  writeLines(c(
-    paste0("cache <- tarshare::shared_cache(", deparse(path), ")"),
-    "list(targets::tar_target(result, 42L, repository = tarshare::shared_repository(cache)))"
-  ), script)
+  pipeline <- bquote({
+    cache <- tarshare::shared_cache(.(path))
+    list(targets::tar_target(
+      result, 42L, repository = tarshare::shared_repository(cache)
+    ))
+  })
+  dput(pipeline, file = script)
   run <- function(store) targets::tar_make(script = script, store = store,
     callr_function = NULL, reporter = "silent", envir = new.env(parent = baseenv()))
   a <- file.path(root, "a")
