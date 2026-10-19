@@ -1,32 +1,33 @@
 library(tarshare)
 
 shared_test_project <- function(cache, name = "result", input = 3L,
-                                context = "list()") {
+                                context = quote(list())) {
   project <- tempfile("tarshare-project-")
   dir.create(project)
   shared_test_write_project(project, cache, name, input, context)
   project
 }
 
+shared_test_write_script <- function(project, pipeline) {
+  dput(pipeline, file = file.path(project, "_targets.R"))
+}
+
 shared_test_write_project <- function(project, cache, name = "result", input = 3L,
-                                      context = "list()") {
-  writeLines(
-    c(
-      paste0("cache <- tarshare::shared_cache(", deparse(cache), ")"),
-      "record <- function(x) {",
-      "  cat('run\\n', file = 'calls.log', append = TRUE)",
-      "  x * 2L",
-      "}",
-      "list(",
-      paste0("  targets::tar_target(input, ", deparse(input), "),"),
-      paste0(
-        "  tarshare::tar_shared(", name, ", record(input), cache, ",
-        "branch_context = ", context, ", packages = character())"
-      ),
-      ")"
-    ),
-    file.path(project, "_targets.R")
-  )
+                                      context = quote(list())) {
+  pipeline <- bquote({
+    cache <- tarshare::shared_cache(.(cache))
+    record <- function(x) {
+      cat("run\n", file = "calls.log", append = TRUE)
+      x * 2L
+    }
+
+    list(
+      targets::tar_target(input, .(input)),
+      tarshare::tar_shared(.(as.name(name)), record(input), cache,
+        branch_context = .(context), packages = character())
+    )
+  })
+  shared_test_write_script(project, pipeline)
 }
 
 shared_test_make <- function(project) {
@@ -48,23 +49,20 @@ shared_test_calls <- function(project) {
 }
 
 shared_test_write_branches <- function(project, cache, name, values) {
-  writeLines(
-    c(
-      paste0("cache <- tarshare::shared_cache(", deparse(cache), ")"),
-      "record <- function(x) {",
-      "  cat(x, '\\n', file = 'calls.log', append = TRUE)",
-      "  x * 2L",
-      "}",
-      "list(",
-      paste0("  targets::tar_target(input, ", deparse(values), "),"),
-      paste0(
-        "  tarshare::tar_shared(", name, ", record(input), cache, ",
-        "pattern = map(input), packages = character())"
-      ),
-      ")"
-    ),
-    file.path(project, "_targets.R")
-  )
+  pipeline <- bquote({
+    cache <- tarshare::shared_cache(.(cache))
+    record <- function(x) {
+      cat(x, "\n", file = "calls.log", append = TRUE)
+      x * 2L
+    }
+
+    list(
+      targets::tar_target(input, .(values)),
+      tarshare::tar_shared(.(as.name(name)), record(input), cache,
+        pattern = map(input), packages = character())
+    )
+  })
+  shared_test_write_script(project, pipeline)
 }
 
 # independent stores and renamed targets reuse a computation
@@ -112,23 +110,20 @@ shared_test_write_branches <- function(project, cache, name, values) {
   dir.create(project)
   on.exit(unlink(c(cache, project), recursive = TRUE))
   write_project <- function(revision) {
-    writeLines(
-      c(
-        paste0("cache <- tarshare::shared_cache(", deparse(cache), ")"),
-        "record <- function() {",
-        "  cat('run\\n', file = 'calls.log', append = TRUE)",
-        "  7L",
-        "}",
-        "list(",
-        paste0("  targets::tar_target(revision, ", deparse(revision), "),"),
-        paste0(
-          "  tarshare::tar_shared(result, record(), cache, ",
-          "branch_context = list(release = revision), packages = character())"
-        ),
-        ")"
-      ),
-      file.path(project, "_targets.R")
-    )
+    pipeline <- bquote({
+      cache <- tarshare::shared_cache(.(cache))
+      record <- function() {
+        cat("run\n", file = "calls.log", append = TRUE)
+        7L
+      }
+
+      list(
+        targets::tar_target(revision, .(revision)),
+        tarshare::tar_shared(result, record(), cache,
+          branch_context = list(release = revision), packages = character())
+      )
+    })
+    shared_test_write_script(project, pipeline)
   }
 
   write_project("alpha")
@@ -190,25 +185,24 @@ shared_test_write_branches <- function(project, cache, name, values) {
   dir.create(second)
   on.exit(unlink(c(cache, first, second), recursive = TRUE))
   write_project <- function(project, name) {
-    writeLines(
-      c(
-        paste0("cache <- tarshare::shared_cache(", deparse(cache), ")"),
-        "draw <- function() {",
-        "  cat('run\\n', file = 'calls.log', append = TRUE)",
-        "  stats::runif(1)",
-        "}",
-        "list(",
-        "  targets::tar_target(replicate_id, 1:3),",
-        paste0(
-          "  tarshare::tar_shared(", name, ", draw(), cache, ",
-          "pattern = map(replicate_id), ",
-          "branch_context = list(replicate = replicate_id), packages = character())"
-        ),
-        ")"
-      ),
-      file.path(project, "_targets.R")
-    )
+    pipeline <- bquote({
+      cache <- tarshare::shared_cache(.(cache))
+      draw <- function() {
+        cat("run\n", file = "calls.log", append = TRUE)
+        stats::runif(1)
+      }
+
+      list(
+        targets::tar_target(replicate_id, 1:3),
+        tarshare::tar_shared(.(as.name(name)), draw(), cache,
+          pattern = map(replicate_id),
+          branch_context = list(replicate = replicate_id),
+          packages = character())
+      )
+    })
+    shared_test_write_script(project, pipeline)
   }
+
   write_project(first, "result")
   write_project(second, "renamed")
   shared_test_make(first)
@@ -226,20 +220,20 @@ shared_test_write_branches <- function(project, cache, name, values) {
   project <- tempfile("tarshare-project-")
   dir.create(project)
   on.exit(unlink(c(cache, project), recursive = TRUE))
-  writeLines(
-    c(
-      paste0("cache <- tarshare::shared_cache(", deparse(cache), ")"),
-      "list(",
-      "  targets::tar_target(input, 1:2),",
-      "  tarshare::tar_shared_raw(",
-      "    'result', quote(input * 2L), cache, pattern = quote(map(input)),",
-      "    branch_context = quote(list(replicate = input)), seed = quote(input),",
-      "    packages = character()",
-      "  )",
-      ")"
-    ),
-    file.path(project, "_targets.R")
-  )
+  pipeline <- bquote({
+    cache <- tarshare::shared_cache(.(cache))
+    list(
+      targets::tar_target(input, 1:2),
+      tarshare::tar_shared_raw(
+        "result", quote(input * 2L), cache, pattern = quote(map(input)),
+        branch_context = quote(list(replicate = input)), seed = quote(input),
+        packages = character()
+      )
+    )
+  })
+  shared_test_write_script(project, pipeline)
+
+
   shared_test_make(project)
   expect_identical(unname(shared_test_read(project, "result")), c(2L, 4L))
 })()
@@ -253,28 +247,26 @@ shared_test_write_branches <- function(project, cache, name, values) {
   dir.create(second)
   on.exit(unlink(c(cache, first, second), recursive = TRUE))
   write_project <- function(project, name) {
-    writeLines(
-      c(
-        paste0("cache <- tarshare::shared_cache(", deparse(cache), ")"),
-        "write_bundle <- function(x) {",
-        "  cat('run\\n', file = 'calls.log', append = TRUE)",
-        "  paths <- c(tarshare::shared_path('data.txt'),",
-        "    tarshare::shared_path('nested/metadata.txt'))",
-        "  writeLines(as.character(x), paths[1])",
-        "  writeLines('metadata', paths[2])",
-        "  paths",
-        "}",
-        "list(",
-        "  targets::tar_target(input, 3L),",
-        paste0(
-          "  tarshare::tar_shared(", name, ", write_bundle(input), cache, ",
-          "format = 'file', packages = character())"
-        ),
-        ")"
-      ),
-      file.path(project, "_targets.R")
-    )
+    pipeline <- bquote({
+      cache <- tarshare::shared_cache(.(cache))
+      write_bundle <- function(x) {
+        cat("run\n", file = "calls.log", append = TRUE)
+        paths <- c(tarshare::shared_path("data.txt"),
+                   tarshare::shared_path("nested/metadata.txt"))
+        writeLines(as.character(x), paths[1])
+        writeLines("metadata", paths[2])
+        paths
+      }
+
+      list(
+        targets::tar_target(input, 3L),
+        tarshare::tar_shared(.(as.name(name)), write_bundle(input), cache,
+          format = "file", packages = character())
+      )
+    })
+    shared_test_write_script(project, pipeline)
   }
+
   write_project(first, "result")
   write_project(second, "renamed")
   shared_test_make(first)
@@ -307,36 +299,31 @@ shared_test_file_identity_branches <- function(iteration) {
     writeLines(contents[i], file.path(second, second_paths[i]))
   }
   write_project <- function(project, name, paths, ids) {
-    writeLines(
-      c(
-        paste0("cache <- tarshare::shared_cache(", deparse(cache), ")"),
-        "read_input <- function(path) {",
-        "  stopifnot(inherits(path, 'tarshare_file'),",
-        "    length(attr(path, 'tarshare_id')) == length(path))",
-        "  cat('run\\n', file = 'calls.log', append = TRUE)",
-        "  readLines(path)",
-        "}",
-        "list(",
-        paste0("  targets::tar_target(inputs, ",
-               if (identical(iteration, "list")) "list(" else "c("),
-        paste0(
-          "    tarshare::shared_file(", deparse(paths[1]),
-          ", id = ", deparse(ids[1]), "),"
-        ),
-        paste0(
-          "    tarshare::shared_file(", deparse(paths[2]),
-          ", id = ", deparse(ids[2]), ")"
-        ),
-        paste0("  ), iteration = ", deparse(iteration), "),"),
-        paste0(
-          "  tarshare::tar_shared(", name, ", read_input(inputs), cache, ",
-          "pattern = map(inputs), iteration = 'list', packages = character())"
-        ),
-        ")"
-      ),
-      file.path(project, "_targets.R")
-    )
+    # The constructor is a symbol; each file input is an R call.
+    files <- lapply(seq_along(paths), function(i) {
+      bquote(tarshare::shared_file(.(paths[i]), id = .(ids[i])))
+    })
+    constructor <- as.name(if (identical(iteration, "list")) "list" else "c")
+    inputs <- as.call(c(list(constructor), files))
+
+    pipeline <- bquote({
+      cache <- tarshare::shared_cache(.(cache))
+      read_input <- function(path) {
+        stopifnot(inherits(path, "tarshare_file"),
+                  length(attr(path, "tarshare_id")) == length(path))
+        cat("run\n", file = "calls.log", append = TRUE)
+        readLines(path)
+      }
+
+      list(
+        targets::tar_target(inputs, .(inputs), iteration = .(iteration)),
+        tarshare::tar_shared(.(as.name(name)), read_input(inputs), cache,
+          pattern = map(inputs), iteration = "list", packages = character())
+      )
+    })
+    shared_test_write_script(project, pipeline)
   }
+
   ids <- c("immutable:first", "immutable:second")
   write_project(first, "result", first_paths, ids)
   write_project(second, "renamed", second_paths, ids)
