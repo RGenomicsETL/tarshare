@@ -4,3 +4,4 @@
 ^.*\.Rcheck$
 ^tarshare_.*\.tar\.gz$
 ^REVIEW\.md$
+^README\.Rmd$
