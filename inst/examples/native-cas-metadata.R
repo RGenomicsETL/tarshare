@@ -7,15 +7,19 @@ native_cas_metadata_example <- function(root = tempfile("native-cas-example-")) 
   script <- file.path(root, "_targets.R")
   counter <- file.path(root, "computed.txt")
   cas <- file.path(root, "cas")
-  writeLines(c(
-    paste0("repository <- targets::tar_repository_cas_local(", deparse(cas), ")"),
-    paste0("counter <- ", deparse(counter)),
-    "compute <- function() {",
-    "  cat('computed\\n', file = counter, append = TRUE)",
-    "  42L",
-    "}",
-    "list(targets::tar_target(result, compute(), repository = repository))"
-  ), script)
+  # Build the targets script as a language object.
+  pipeline <- bquote({
+    repository <- targets::tar_repository_cas_local(.(cas))
+    counter <- .(counter)
+
+    compute <- function() {
+      cat("computed\n", file = counter, append = TRUE)
+      42L
+    }
+
+    list(targets::tar_target(result, compute(), repository = repository))
+  })
+  dput(pipeline, file = script)
   first <- file.path(root, "first")
   second <- file.path(root, "second")
   run <- function(store) targets::tar_make(script = script, store = store,
