@@ -1,0 +1,64 @@
+name: R-CMD-check
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          use-public-rspm: true
+      - uses: r-lib/actions/setup-r-dependencies@v2
+        with:
+          extra-packages: |
+            any::rcmdcheck
+            any::roxygen2
+            any::knitr
+      - name: Install tarshare before executing README
+        shell: Rscript {0}
+        run: |
+          status <- system2(file.path(R.home("bin"), "R"), c("CMD", "INSTALL", "."))
+          stopifnot(identical(as.integer(status), 0L))
+          stopifnot(requireNamespace("tarshare", quietly = TRUE))
+      - name: Execute README.Rmd
+        shell: Rscript {0}
+        run: |
+          knitr::opts_chunk$set(error = FALSE)
+          source <- readLines("README.Rmd", warn = FALSE)
+          stopifnot(length(grep("^\x60\x60\x60\\{r", source)) > 0L)
+          stopifnot(!any(grepl("eval[[:space:]]*=[[:space:]]*(FALSE|0)", source)))
+          knitr::knit("README.Rmd", output = "README.md", quiet = TRUE)
+          stopifnot(!any(grepl("## Error", readLines("README.md"), fixed = TRUE)))
+      - name: Verify README matches evaluated source
+        shell: bash
+        run: |
+          git diff --exit-code -- README.md
+      - name: Verify generated public help
+        shell: Rscript {0}
+        run: |
+          roxygen2::roxygenise()
+          status <- system2("git", c("diff", "--exit-code", "--", "NAMESPACE", "man"))
+          untracked <- system2("git", c("ls-files", "--others", "--exclude-standard", "man"), stdout = TRUE)
+          stopifnot(status == 0L, length(untracked) == 0L)
+      - uses: r-lib/actions/check-r-package@v2
+        with:
+          args: 'c("--no-manual", "--as-cran")'
+      - name: Retain executed source and check logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: check-${{ matrix.os }}
+          path: check/
+          retention-days: 14
+          if-no-files-found: warn

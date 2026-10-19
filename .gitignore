@@ -1,0 +1,6 @@
+.Rhistory
+.RData
+.Rproj.user/
+_targets/
+*.Rcheck/
+tarshare_*.tar.gz

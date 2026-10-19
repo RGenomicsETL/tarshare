@@ -1,7 +1,441 @@
 # tarshare
 
-Reuse declared computations across independent R `targets` pipelines.
+<!-- README.md is generated from README.Rmd by knitr. Edit README.Rmd, then run
+     knitr::knit("README.Rmd", "README.md"). CI fails if the two drift. -->
 
-The initial package implementation is being reviewed in a pull request.
+
+
+tarshare lets independent [`targets`](https://docs.ropensci.org/targets/)
+pipelines reuse each other's results. Several pipelines point at one shared
+cache directory. A target declared with `tar_shared()` is computed once; any
+other pipeline that declares the same computation gets the stored result
+instead of running it again. That holds even when the other pipeline lives in a
+different project, keeps its own `_targets/` store, and calls the target by a
+different name.
+
+## Why not plain targets?
+
+`targets` already skips work inside one store, and
+[`tar_repository_cas()`](https://docs.ropensci.org/targets/reference/tar_repository_cas.html)
+together with copied metadata can share results between *compatible copies* of
+one pipeline. That route needs no tarshare, and the shipped
+[native CAS example](inst/examples/native-cas-metadata.R) shows it working.
+
+tarshare is for stores that are not copies of each other: different projects,
+different target names, or pipelines that have only some steps in common. For
+each shared target it derives a key from the code and its inputs, and looks
+that key up in the cache before the command runs. It does not touch the
+scheduler, the dependency graph, or the metadata of any store.
+
+What tarshare does not do:
+
+- It does not discover hidden inputs. Options, environment variables, external
+  programs and database state must be declared, or a stale hit is possible.
+- It does not clean up by itself. There is no quota, eviction, or online
+  garbage collector; maintenance is explicit and offline.
+- It does not come with a multi-host filesystem guarantee. NFS and SMB
+  behaviour depends on the deployment and must be qualified there.
+- It does not talk to cloud object storage, and it is not safe against hostile
+  writers who can reach the cache directory.
+
+## Installation
+
+tarshare is not on CRAN yet.
+
+``` r
+# install.packages("remotes")
+remotes::install_github("RGenomicsETL/tarshare")
+```
+
+## Quick start
+
+Create a cache in `_targets.R` and declare the expensive step with
+`tar_shared()` instead of `tar_target()`. The rest of the pipeline stays as it
+is.
+
+``` r
+# _targets.R
+library(targets)
+library(tarshare)
+
+cache <- shared_cache("/shared/tarshare-cache")
+
+summarise_values <- function(x) {
+  c(mean = mean(x), spread = stats::sd(x))
+}
+
+list(
+  tar_target(values, c(3, 5, 8, 13)),
+  tar_shared(summary, summarise_values(values), cache)
+)
+```
+
+`tar_shared()` is a target factory. It returns an ordinary target whose
+command is wrapped in `shared_run()`. When targets runs that target, tarshare
+computes the key and either restores the stored result or evaluates the
+command and stores it. targets still dispatches the target and loads its
+dependencies on a hit, so invalidation and the dependency graph behave as
+usual; only the expensive command is skipped.
+
+The example script below writes two copies of the pipeline above, one naming
+the target `summary` and the other `renamed_summary`, and runs each in a fresh
+store against one temporary cache. Its `summarise_values()` appends a line to a
+counter file every time it really runs.
+
+
+``` r
+library(targets)
+library(tarshare)
+source(system.file("examples/independent-stores.R", package = "tarshare"), local = TRUE)
+```
+
+Both stores hold the result, and the counter shows one computation:
+
+
+``` r
+tar_read(summary, store = store_a)
+```
+
+```
+##     mean   spread 
+## 7.250000 4.349329
+```
+
+``` r
+tar_read(renamed_summary, store = store_b)
+```
+
+```
+##     mean   spread 
+## 7.250000 4.349329
+```
+
+``` r
+readLines(counter_path)
+```
+
+```
+## [1] "computed"
+```
+
+The target name and the store path are not part of the key. Renaming the
+target is free; rewriting the command is not, because the key is built from
+the code itself, not from an analysis of what the code means.
+
+## The same thing outside targets
+
+`shared_run()` is the function underneath `tar_shared()`, and it works on its
+own in scripts and functions. The second call below returns the stored value
+without evaluating the command:
+
+
+``` r
+cache <- shared_cache(cache_path)
+
+slow_square <- function(x) {
+  cat("computing...\n")
+  x^2
+}
+
+shared_run(slow_square(1:4), cache)
+```
+
+```
+## computing...
+```
+
+```
+## [1]  1  4  9 16
+```
+
+``` r
+shared_run(slow_square(1:4), cache)
+```
+
+```
+## [1]  1  4  9 16
+```
+
+Every hit and every computation also emits a message of class
+`tarshare_event` with `event` and `key` fields, for callers that want to log
+them.
+
+## What makes two computations the same
+
+The key is a SHA-256 of:
+
+- the command's code, with source references stripped, so formatting and
+  comments do not matter but any change to a symbol does;
+- the values of variables and the code of functions the command refers to,
+  found by static analysis and followed recursively through your own helper
+  functions;
+- the versions of the packages involved, including `pkg::fun` references and
+  their hard dependencies;
+- the `format`, the declared `context`, and the `seed`;
+- the R version and platform, and the tarshare version.
+
+The key cannot see anything looked up at run time: R options, environment
+variables, the locale, executables on the path, files opened by name, network
+or database state, and S3 or S4 methods chosen by dispatch. Declare those in
+`context`, or pass them into the command as values.
+
+## Declaring external state
+
+`context` is evaluated once, while `_targets.R` is being run to build the
+graph. tarshare embeds a canonical fingerprint of it in the generated target
+command, so a change in declared context invalidates the local target in the
+usual targets way and changes the shared key. Without the declaration below,
+changing the option would hand back the old result:
+
+
+``` r
+options(analysis.scale = 2)
+scale <- shared_context(options = "analysis.scale")
+scale$options
+```
+
+```
+## $analysis.scale
+## [1] 2
+```
+
+``` r
+scaled <- tar_shared(result, values * getOption("analysis.scale"), cache, context = scale)
+```
+
+`shared_context()` returns a plain list. It takes named immutable values, and
+can snapshot selected files, options, non-secret environment variables,
+provider packages, and the locale:
+
+
+``` r
+model_file <- file.path(example_root, "model.rds")
+saveRDS(list(model = "example"), model_file)
+Sys.setenv(MODEL_VARIANT = "reference")
+
+execution <- shared_context(
+  image = "sha256:immutable-container-image-digest",
+  files = list(model = model_file),
+  options = "analysis.scale",
+  env = "MODEL_VARIANT",
+  locale = TRUE
+)
+```
+
+A few rules keep the declaration honest:
+
+- Pass the snapshot's values into the computation rather than reading the
+  option or variable again at run time; the snapshot is what the key sees.
+- Files in `files` are hashed once per snapshot. If you already hold a trusted
+  hash or an immutable version id, `shared_file(path, id = ...)` records it
+  without reading the bytes. Directories always need an explicit id.
+- A version label does not identify a replaced binary or model. Use the
+  content hash or an immutable release id.
+- Never put credentials in context. targets writes commands into its metadata.
+
+### Values from other targets
+
+Values that come from upstream targets or dynamic branches go in
+`branch_context`, not `context`. It stays an unevaluated expression, so targets
+can see the dependency and each branch gets its own key:
+
+
+``` r
+draws_target <- tar_shared(
+  draws, stats::rnorm(2), cache,
+  pattern = map(replicate_id),
+  branch_context = list(replicate = replicate_id)
+)
+```
+
+Random numbers inside a shared command come from a stream seeded from the key,
+and the caller's RNG state is restored afterwards. Two branches with the same
+code, inputs, context and `seed` therefore share one result. Give independent
+replicates distinct branch context or distinct seeds.
+
+`tar_shared_raw()` is the string-and-expression form of `tar_shared()`: give
+it a resolved value for `context` and a quoted expression for
+`branch_context`.
+
+## File outputs
+
+For large or non-R results, use `format = "file"`, write everything below
+`shared_path()`, and return the paths you wrote or the bundle directory itself.
+The whole staging directory is stored, so index files and other sidecars
+travel with the data:
+
+
+``` r
+bundle <- shared_run({
+  writeLines("data", shared_path("data.txt"))
+  writeLines("index", shared_path("data.idx"))
+  shared_path()
+}, cache, format = "file")
+list.files(bundle)
+```
+
+```
+## [1] "data.idx" "data.txt"
+```
+
+The returned paths belong to the cache and are immutable: downstream steps read
+them and write their own outputs elsewhere. Relative layout, names and empty
+directories are preserved; symbolic links and files outside the staging
+directory are rejected; file contents are stored byte for byte, so do not
+write the staging path into them.
+
+The default `format = "rds"` stores self-contained R values. Environments,
+external pointers, connections and functions are rejected. An R object that
+merely contains a path does not preserve the file behind it.
+
+## File inputs
+
+A plain character path is an ordinary value: the key records the string, not
+the file. `shared_file()` replaces it with a path that carries a content hash,
+so moving or copying the file does not change the key, and replacing its
+contents does:
+
+
+``` r
+measurements <- file.path(example_root, "measurements.txt")
+writeLines(c("3", "5", "8", "13"), measurements)
+input <- shared_file(measurements)
+shared_run(mean(scan(input, quiet = TRUE)), cache)
+```
+
+```
+## [1] 7.25
+```
+
+Use it only when the result does not depend on the file name. If a name,
+sample label or path carries meaning, put that in `context` as well.
+
+## Using the cache as a targets repository
+
+`shared_repository()` exposes the same cache through
+`targets::tar_repository_cas()`, so ordinary targets can store their objects in
+it too:
+
+
+``` r
+repository <- shared_repository(cache)
+```
+
+``` r
+tar_option_set(repository = shared_repository(cache))
+```
+
+Those objects are keyed by targets' own content hashes and live in a separate
+`native/` namespace, so they are never confused with tarshare's action keys.
+`tar_shared(..., repository = ...)` composes with any public CAS repository.
+File results are first copied to a private export area because a repository
+may move what it is given, and `verify = TRUE` (the default) re-hashes file
+bundles on every lookup. This is a safe backend, not a zero-copy one.
+
+## Cache layout
+
+`shared_cache(path)` creates:
+
+- `actions/`: computation key to content object;
+- `objects/`: immutable R values and file bundles, addressed by content;
+- `native/`: objects stored through the targets CAS interface;
+- `refs/`: retention references per owner;
+- `locks/`: lock files, never removed;
+- `exports/`: disposable copies handed to external repositories.
+
+Distinct computations with identical results share one object. An action is
+published only after its object is complete and readable, and both
+publications are atomic renames, so a crash leaves an unreferenced object
+rather than a half-written hit. Missing or corrupt data is a miss, and hard
+storage errors propagate rather than turning into silent recomputation.
+
+## Keeping and removing results
+
+Every result returned by `shared_run()` is pinned for an *owner* before the
+call returns. The owner is the running targets store, or the working directory
+for a standalone call; `shared_run(owner = ...)` sets another one. Pins
+accumulate and survive the deletion of the store that created them, so
+nothing in the cache is ever removed implicitly:
+
+
+``` r
+refs <- shared_references(cache)
+table(refs$kind)
+```
+
+```
+## 
+## actions 
+##       5
+```
+
+``` r
+nrow(shared_gc(cache)) # dry run: everything is still referenced
+```
+
+```
+## [1] 0
+```
+
+Maintenance is explicit:
+
+- `shared_retain(cache, keys, owner)` adds a pin for another consumer, such as
+  a report that keeps reading a bundle after the pipeline that made it is gone.
+- `shared_release(cache, owner, quiescent = TRUE)` drops an owner's pins.
+- `shared_gc(cache)` previews what would go. With `dry_run = FALSE,
+  quiescent = TRUE` it removes unreferenced actions, then unreachable objects,
+  then abandoned staging older than `stage_age`.
+
+``` r
+shared_release(cache, shared_owner("/path/to/old/_targets"), quiescent = TRUE)
+shared_gc(cache, dry_run = FALSE, quiescent = TRUE)
+```
+
+`quiescent = TRUE` is your assertion that no pipeline or reader is active. The
+maintenance lock keeps other tarshare operations out while collection runs,
+but it cannot see a process that is still reading a path it was handed
+earlier. Collection validates every pin and action before deleting anything,
+and can resume after an interruption. Do not point targets' single-store
+`tar_repository_cas_local_gc()` at this cache: it cannot see tarshare's pins.
+
+## Shared filesystems
+
+All consumers must see the cache at the same mounted path. The filesystem must
+support the advisory file locks used by the filelock package and atomic
+rename within the cache directory. `shared_cache()` takes a `timeout` for lock
+acquisition and `visibility_timeout` with `poll_interval` for filesystems with
+delayed read-after-write visibility. Atomic publication is not a power-loss
+durability guarantee.
+
+NFS and SMB behaviour depends on the server, the client and the mount
+options. The package ships a
+[two-host qualification harness](inst/qualification/README.md) that exercises
+competing writers, killed writers, visibility and retained readers. CI runs it
+on a single host only, which proves the harness, not any particular deployment.
+
+Share a cache only with trusted collaborators. Reading an R object from the
+cache is a deserialization, not a sandbox, and whoever can write to the
+directory can publish or alter results.
+
+## Development
+
+Tests use [tinytest](https://github.com/markvanderloo/tinytest). They live in
+`inst/tinytest/` and run during `R CMD check`; for an installed package, run
+`tinytest::test_package("tarshare")`.
+
+`README.md` is rendered from `README.Rmd` with every chunk evaluated against
+temporary stores and a temporary cache:
+
+``` r
+knitr::knit("README.Rmd", "README.md")
+```
+
+CI renders it on Linux, Windows and macOS and fails if the committed
+`README.md` differs. It also regenerates the help with
+`roxygen2::roxygenise()` and fails on drift, then runs
+`R CMD check --no-manual --as-cran`.
+
+[REVIEW.md](REVIEW.md) records the design decisions and validation boundaries
+from the initial review. [NEWS.md](NEWS.md) lists releases.
 
 License: GPL-3.
