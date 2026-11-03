@@ -1,6 +1,6 @@
 Package: tarshare
 Title: Share Computation Results Across 'targets' Pipelines
-Version: 0.1.0
+Version: 0.1.0.9000
 Authors@R: c(
     person("Sounkou Mahamane", "Toure", email = "sounkoutoure@gmail.com",
            role = c("aut", "cre")),
@@ -10,8 +10,9 @@ Description: Reuse computations across independent 'targets' stores through an
     code, referenced values and helper functions, package identities, execution
     context, and a reproducible random seed. Supports ordinary R values and
     complete file bundles, immutable input identities, coordinated writers, and
-    atomic publication. Uses public 'targets' interfaces without editing pipeline
-    metadata.
+    atomic publication. A cache directory can also be served to hosts without a
+    shared filesystem over 'nanonext'. Uses public 'targets' interfaces without
+    editing pipeline metadata.
 License: GPL-3
 URL: https://rgenomicsetl.github.io/tarshare/, https://github.com/RGenomicsETL/tarshare
 BugReports: https://github.com/RGenomicsETL/tarshare/issues
@@ -29,8 +30,9 @@ Imports:
 Suggests:
     callr,
     knitr,
+    nanonext (>= 1.10.0),
     rmarkdown,
     tinytest (>= 1.4.1)
 VignetteBuilder: knitr
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.3
+Config/roxygen2/version: 8.1.1

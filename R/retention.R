@@ -79,6 +79,7 @@ shared_refs_read <- function(cache) {
 #'   Retain/release return the number of requested/removed references invisibly.
 #' @export
 shared_references <- function(cache) {
+  shared_local_cache(cache, "shared_references()")
   gate <- shared_gate(cache)
   on.exit(shared_ungate(cache, gate), add = TRUE)
   shared_refs_read(cache)[c("owner", "kind", "key")]
@@ -87,6 +88,7 @@ shared_references <- function(cache) {
 #' @rdname shared_references
 #' @export
 shared_retain <- function(cache, keys, owner = shared_owner()) {
+  shared_local_cache(cache, "shared_retain()")
   shared_owner_check(owner)
   if (!is.character(keys) || !all(vapply(keys, shared_is_key, logical(1)))) {
     stop("keys must be action keys emitted by shared_run().", call. = FALSE)
@@ -109,6 +111,7 @@ shared_retain <- function(cache, keys, owner = shared_owner()) {
 #' @rdname shared_references
 #' @export
 shared_release <- function(cache, owner, keys = NULL, quiescent = FALSE) {
+  shared_local_cache(cache, "shared_release()")
   shared_owner_check(owner)
   if (!isTRUE(quiescent)) stop("Release requires quiescent = TRUE.", call. = FALSE)
   if (!is.null(keys) && (!is.character(keys) || anyNA(keys))) {
@@ -146,6 +149,7 @@ shared_release <- function(cache, owner, keys = NULL, quiescent = FALSE) {
 #'   collection may leave orphan objects, which the next invocation can collect.
 #' @export
 shared_gc <- function(cache, dry_run = TRUE, quiescent = FALSE, stage_age = 3600) {
+  shared_local_cache(cache, "shared_gc()")
   shared_flag(dry_run, "dry_run")
   shared_seconds(stage_age, "stage_age")
   if (!dry_run && !isTRUE(quiescent)) {

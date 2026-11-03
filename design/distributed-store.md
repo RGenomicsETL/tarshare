@@ -1,7 +1,10 @@
 # Distributed tarshare: design options
 
-Status: proposal. Nothing here is implemented. The one experiment it relies on
-is [`spikes/nng-lease.R`](spikes/nng-lease.R).
+Status: option D's first two phases are implemented: `shared_serve()`, store
+URLs in `shared_cache()`, and location-independent identity for cache-owned
+paths. See [As built](#as-built). The protocol is specified in TLA+ in
+[`spec/`](spec/) and model-checked; see [Specification](#specification). The
+lease experiment is [`spikes/nng-lease.R`](spikes/nng-lease.R).
 
 ## Summary
 
@@ -46,6 +49,132 @@ User-facing additions: a URL form of `shared_cache()`, one new function,
 `shared_repository()` and the retention contract stay as they are. The key
 changes once, for computations that consumed cache-owned paths (see
 [Identity](#identity-of-cache-owned-paths)).
+
+## As built
+
+The first two phases of option D, in `R/serve.R`, `R/remote.R` and `R/wire.R`,
+with `inst/tinytest/test-store.R`:
+
+- **Server.** `shared_serve(path, url, tls, token)` is a single-threaded nanonext
+  `rep` loop over an ordinary cache directory. It monitors pipes, binds leases
+  to `pipe_id()`, and grants leases only to pipes it has seen open. A lease
+  also holds the key's `action-<key>` file lock, so filesystem clients of the
+  same directory and store clients exclude each other. Each request holds the
+  shared maintenance lock.
+- **Client.** `shared_cache(url, tls, mirror, chunk_size)` returns a plain list,
+  safe to embed in target commands; the socket opens lazily per process and is
+  reopened after a fork. The token comes from `TARSHARE_TOKEN` at connection
+  time. The mirror resolves per host, with one subdirectory per URL.
+- **Compute path.** A granted claim runs the unchanged filesystem
+  `shared_run()` on the mirror. The miss path therefore has a single
+  implementation, and the existing fault-injection tests still cover it.
+- **Wire.** The ducknng v1 envelope (22-byte header). Methods are
+  `tarshare.claim`, `publish`, `abandon`, `have`, `put_begin`, `put_chunk`,
+  `put_end`, `manifest` and `get_chunk`. Control payloads are `name<TAB>value`
+  lines rather than JSON (no JSON parser in the dependency set), followed by
+  a manifest or raw bytes.
+- **No deserialization on the server.** It verifies sizes, SHA-256 and that the
+  record hashes to the object id. It keeps a server-written `manifest.tsv` per
+  object, generated on first use for objects that filesystem clients
+  published.
+- **Administration.** Run `shared_gc()`, `shared_release()`,
+  `shared_references()` and `shared_retain()` against the store's directory on
+  its host. There are no admin verbs on the wire yet; these functions refuse a
+  URL.
+- **Collection needs no grace period.** `publish` refuses an object that is not
+  committed, and the client uploads it again. The spec shows this is enough
+  (`ActionsHaveObjects`, `Completes`), and the store test exercises it.
+- **Path identity.** A string `<root>/objects/<64 hex>/files[/...]` becomes
+  `tarshare-object:<id>[/...]` in keys. This applies only when `<root>` is laid
+  out as a cache and the object's `complete` file exists, so keys do not depend
+  on which caches a process happens to know.
+
+Not yet built: tiers and `shared_push()`; the native namespace (so
+`shared_repository()` refuses a URL); admin verbs; parked waiters; the
+dirty-start re-verification. Default transfer chunk: 8 MiB. Default request
+timeout: 300 s (option `tarshare.request_timeout`).
+
+## Specification
+
+[`spec/TarshareStore.tla`](spec/TarshareStore.tla) models one store and its
+clients. Clients claim, compute, upload, publish and download. The model
+includes crashes, connection drops that leave the client running, server
+restarts, operator releases, and collection with no quiescence precondition.
+Computation is nondeterministic, so two clients computing one key may produce
+different objects. The checked properties:
+
+| Property | Meaning |
+|---|---|
+| `ActionsHaveObjects` | an action always names a committed object |
+| `PinsHold` | a pinned key always has its action |
+| `FetchSafe` | a client sent to download an object finds it |
+| `OneResult` | while a consumer's pin stands, the key resolves to what it delivered |
+| `LeaseOnLiveConnection` | leases are held only over live connections |
+| `SingleFlight` | a key is recomputed only after a lease was lost unpublished or its action collected |
+| `Completes` (liveness) | every client that does not crash returns a result |
+
+TLC checks all of them with 3 clients, 2 keys, 2 possible results, one
+connection drop or restart, and one collection: 1,219,652 distinct states, no
+error. [`spec/check.sh`](spec/check.sh) also seeds four bugs and confirms that
+each is caught:
+
+| Seeded bug | Caught by |
+|---|---|
+| a hit that does not pin | `FetchSafe` |
+| publication that overwrites | `OneResult` |
+| publication without the committed-object check | `ActionsHaveObjects` |
+| a crashed client keeping its lease | `Completes` |
+
+Run with `TLA2TOOLS=/path/to/tla2tools.jar sh design/spec/check.sh` (TLC 1.8.0).
+The model is at the protocol level: one server step per request, as the
+single-threaded server provides. Bytes, chunking and hashing are left to
+`test-store.R`, whose blocks are named after these properties.
+
+## ducknng, DuckDB 2.0 and Quack
+
+**DuckDB 2.0.0 shipped on 2026-10-21 (LTS).**
+
+- Extensions built on the stable v1 C API (`C_STRUCT`) still load: v2.0.0
+  accepts v1 versions up to 1.5.6.
+- `C_STRUCT_UNSTABLE` now means the unstable v2 API, so a 1.x extension built
+  as unstable is refused by 2.0. Its message reads: "pin it with
+  build_loadable_extension_capi(... 1 5 6 ...)".
+- The C API v2 is "not yet stable".
+
+**ducknng is not 2.0-ready as built.** It sets `USE_UNSTABLE_C_API=1` against
+v1.5.2, only for the Arrow conversion and error-data functions. In the v2.0.0
+headers those functions are in the stable v1 struct under
+`DUCKDB_API_VERSION_AT_LEAST(1, 5, 6)`. The pending-streaming functions are
+in its unguarded base. Building ducknng on the stable v1 API at 1.5.6 should
+give one binary for DuckDB 1.5.6 and 2.0. This is from reading the headers,
+not from a build.
+
+**What a tarshare server on ducknng (option F) would need from ducknng:**
+
+1. The stable-API rebuild above.
+2. The requesting pipe id in `ducknng_auth_context()` or
+   `ducknng_request_subject()`. The dispatcher already has it
+   (`nng_msg_get_pipe()` in `ducknng_service.c`). With it, a lease row can
+   store its pipe and be checked lazily against `ducknng_list_pipes()`, so no
+   removal callback is needed.
+3. A switch to leave the always-on `query_open` family unregistered, instead of
+   denying it in an authorizer.
+4. Optionally, raw (non-JSON) request bodies for SQL methods, to carry chunk
+   bytes. Without that, bytes go to a bucket through Ropendal, as in option F.
+
+**Quack directly.** Quack is a DuckDB core extension, first released in
+1.5.3; its repository README still says "experimental". It speaks HTTP and
+"exposes the full SQL surface".
+
+- `quack_authorization_function` can allow, deny or rewrite each statement,
+  and `quack_authentication_function` gives per-user tokens. That makes fixed
+  operations possible only by matching query text.
+- The protocol version must match exactly.
+- Leases cannot be tied to a connection.
+- An R client would need duckdb, quack and httpfs.
+
+It suits DuckDB-to-DuckDB access to the index in option F, not the R client
+path, which stays on nanonext.
 
 ## Inspiration: Nextflow Global Cache
 
@@ -646,10 +775,10 @@ Implementation notes from the spike:
 
 ## Phasing and tests
 
-1. **Seam and path identity.** No behaviour change apart from the one-time key
-   change for cache-owned paths, recorded in NEWS. All other tinytests pass
-   untouched.
-2. **nng driver and `shared_serve()`** for `CLAIM`, `PUBLISH`, `ABANDON`,
+1. **Seam and path identity (done).** The seam turned out to be a single
+   dispatch in `shared_run()`; the remote driver reuses the filesystem path on
+   its mirror. All other tinytests pass untouched.
+2. **nng driver and `shared_serve()` (done)** for `CLAIM`, `PUBLISH`, `ABANDON`,
    objects and the mirror, on the ducknng envelope. Run the existing cache
    tests against a server in `callr::r_bg()` on `ipc://`, so CI opens no
    ports. New tests:
@@ -703,13 +832,13 @@ Later, only if needed:
    laptops)? With a mount everywhere, C first is smaller; otherwise D.
 2. Is one server, backed up but not replicated, acceptable for a first
    version?
-3. **Wire format.** Adopt ducknng's envelope from the start, keeping option F
-   and DuckDB clients open, or start with a private text protocol and migrate?
+3. **Wire format (decided).** The ducknng envelope, with text control payloads.
+   Switch control payloads to JSON if option F is built.
 4. **Index backend.** Stay on the fs layout (offline maintenance with today's
    functions, no new dependencies), or move to DuckDB tables early for SQL
    inspection and WAL durability?
-5. **ducknng request pipe id.** Would ducknng expose the requesting pipe in
-   `ducknng_auth_context()`, so option F gets connection-bound leases?
+5. **ducknng changes.** Rebuild on the stable v1 C API at 1.5.6 and expose the
+   request pipe id (see [ducknng, DuckDB 2.0 and Quack](#ducknng-duckdb-20-and-quack)).
 6. **Owner identity across hosts.** The default owner is the store path as
    seen by the process that runs the target. A crew worker on another host
    sees a different path, and two hosts can share a path. Two choices:

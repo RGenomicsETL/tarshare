@@ -6,3 +6,5 @@ _targets/
 tarshare_*.tar.gz
 docs/
 inst/doc/
+design/spec/states/
+design/spec/*_TTrace_*.tla

@@ -24,9 +24,10 @@ reference:
   - tar_shared
   - shared_run
 - title: Cache and repositories
-  desc: Configure the shared directory and expose it through the targets CAS interface.
+  desc: Configure the shared directory or store, serve it to other hosts, and expose it through the targets CAS interface.
   contents:
   - shared_cache
+  - shared_serve
   - shared_repository
 - title: Inputs and context
   desc: Declare what the computation depends on beyond its code.
