@@ -25,6 +25,7 @@ export(shared_release)
 export(shared_repository)
 export(shared_retain)
 export(shared_run)
+export(shared_serve)
 export(tar_shared)
 export(tar_shared_raw)
 importFrom(vctrs,

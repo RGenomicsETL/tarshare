@@ -1,26 +1,48 @@
-#' Configure a shared filesystem cache
+#' Configure a shared cache
 #'
-#' The directory must be visible at the same path to all workers that consume
-#' cached file outputs. It must support operating-system file locks and atomic
-#' directory renames within the filesystem. Use a cache shared with trusted
-#' collaborators: reading an R cache is not a sandbox for untrusted objects.
+#' A directory path gives a filesystem cache. The directory must be visible at
+#' the same path to all workers that consume cached file outputs. It must
+#' support operating-system file locks and atomic directory renames within the
+#' filesystem.
 #'
-#' @param path Cache directory, independent of any individual targets store.
+#' A `tcp://`, `tls+tcp://` or `ipc://` URL gives a cache served by
+#' [shared_serve()]. No shared filesystem is needed: each host copies the
+#' objects it uses into a local mirror, which is itself a filesystem cache.
+#'
+#' Use a cache shared with trusted collaborators: reading an R cache is not a
+#' sandbox for untrusted objects.
+#'
+#' @param path Cache directory, independent of any individual targets store, or
+#'   the URL of a store started with [shared_serve()].
 #' @param verify Verify the contents of cached output files on each cache hit.
 #'   Set to `FALSE` only for an externally enforced immutable cache. Record
-#'   integrity and bundle completeness are checked either way.
+#'   integrity and bundle completeness are checked either way. Objects
+#'   downloaded from a store are always verified before they enter the mirror.
 #' @param timeout Seconds to wait for another process computing the same key.
 #'   The default waits until the other process finishes or exits.
 #' @param visibility_timeout Maximum seconds to retry a missing or incomplete
 #'   result after acquiring its lock. Zero is appropriate for a local filesystem.
-#' @param poll_interval Seconds between visibility retries.
-#' @return A cache configuration object. Construction creates the directory.
+#' @param poll_interval Seconds between visibility retries, and the first wait
+#'   between polls of a store while another client computes the same key.
+#' @param tls For a `tls+tcp://` store: path to the PEM certificate authority
+#'   chain that validates the server certificate.
+#' @param mirror For a store: the local mirror directory. The default, `NULL`,
+#'   resolves on each host to option `tarshare.mirror`, environment variable
+#'   `TARSHARE_MIRROR`, or `tools::R_user_dir("tarshare", "cache")`, with one
+#'   subdirectory per store URL. Leave it `NULL` in pipelines whose workers run
+#'   on several hosts: the cache configuration is embedded in target commands.
+#' @param chunk_size For a store: bytes per transfer message.
+#' @return A cache configuration object. Construction creates the directory of
+#'   a filesystem cache. A store cache connects on first use; the access token
+#'   is read from environment variable `TARSHARE_TOKEN` at that time and is
+#'   never stored in the configuration.
 #' @export
 #' @examples
 #' cache <- shared_cache(tempfile("shared-cache-"))
 #' shared_run(sum(1:10), cache)
 shared_cache <- function(path, verify = TRUE, timeout = Inf,
-                         visibility_timeout = 0, poll_interval = 0.05) {
+                         visibility_timeout = 0, poll_interval = 0.05,
+                         tls = NULL, mirror = NULL, chunk_size = 8 * 2^20) {
   if (!is.character(path) || length(path) != 1L || is.na(path) || !nzchar(path)) {
     stop("path must be one nonempty directory path.", call. = FALSE)
   }
@@ -32,6 +54,13 @@ shared_cache <- function(path, verify = TRUE, timeout = Inf,
   }
   shared_seconds(visibility_timeout, "visibility_timeout")
   shared_seconds(poll_interval, "poll_interval", positive = TRUE)
+  if (shared_is_url(path)) {
+    return(shared_remote_cache(path, verify, timeout, poll_interval, tls, mirror,
+                               chunk_size))
+  }
+  if (!is.null(tls) || !is.null(mirror)) {
+    stop("tls and mirror apply only to a store URL.", call. = FALSE)
+  }
   path <- path.expand(path)
   shared_mkdir(path)
   for (kind in c("actions", "objects", "native", "refs", "locks", "exports")) {
@@ -113,6 +142,10 @@ shared_run <- function(command, cache, format = "rds", context = list(),
     expr, envir, list(format = format, context = context), seed, packages
   )
   key <- identity$key
+  if (inherits(cache, "tarshare_remote")) {
+    return(shared_run_remote(cache, key, expr, envir, format, context, seed, packages,
+                             owner, localize))
+  }
   gate <- shared_gate(cache)
   on.exit(shared_ungate(cache, gate), add = TRUE)
   lock <- shared_lock(cache, paste0("action-", key))
@@ -162,6 +195,14 @@ shared_run <- function(command, cache, format = "rds", context = list(),
 }
 
 shared_runtime <- new.env(parent = emptyenv())
+
+shared_publish_action <- function(cache, key, object, format) {
+  action_stage <- shared_stage(cache, "actions")
+  on.exit(unlink(action_stage, recursive = TRUE), add = TRUE)
+  shared_write_record(list(schema = 1L, key = key, object = object,
+                           format = format), action_stage)
+  shared_publish(action_stage, shared_location(cache, "actions", key))
+}
 
 shared_compute <- function(expr, envir, seed, stage, format) {
   previous <- shared_runtime$current

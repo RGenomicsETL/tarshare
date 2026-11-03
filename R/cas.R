@@ -18,6 +18,7 @@
 #'   serialization without a closure or a dependency on targets internals.
 #' @export
 shared_repository <- function(cache, consistent = FALSE) {
+  shared_local_cache(cache, "shared_repository()")
   shared_flag(consistent, "consistent")
   targets::tar_repository_cas(
     upload = function(key, path) tarshare::shared_cas_upload(key, path, cache),

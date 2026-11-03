@@ -2,22 +2,27 @@
 % Please edit documentation in R/cache.R
 \name{shared_cache}
 \alias{shared_cache}
-\title{Configure a shared filesystem cache}
+\title{Configure a shared cache}
 \usage{
 shared_cache(
   path,
   verify = TRUE,
   timeout = Inf,
   visibility_timeout = 0,
-  poll_interval = 0.05
+  poll_interval = 0.05,
+  tls = NULL,
+  mirror = NULL,
+  chunk_size = 8 * 2^20
 )
 }
 \arguments{
-\item{path}{Cache directory, independent of any individual targets store.}
+\item{path}{Cache directory, independent of any individual targets store, or
+the URL of a store started with \code{\link[=shared_serve]{shared_serve()}}.}
 
 \item{verify}{Verify the contents of cached output files on each cache hit.
 Set to \code{FALSE} only for an externally enforced immutable cache. Record
-integrity and bundle completeness are checked either way.}
+integrity and bundle completeness are checked either way. Objects
+downloaded from a store are always verified before they enter the mirror.}
 
 \item{timeout}{Seconds to wait for another process computing the same key.
 The default waits until the other process finishes or exits.}
@@ -25,16 +30,39 @@ The default waits until the other process finishes or exits.}
 \item{visibility_timeout}{Maximum seconds to retry a missing or incomplete
 result after acquiring its lock. Zero is appropriate for a local filesystem.}
 
-\item{poll_interval}{Seconds between visibility retries.}
+\item{poll_interval}{Seconds between visibility retries, and the first wait
+between polls of a store while another client computes the same key.}
+
+\item{tls}{For a \verb{tls+tcp://} store: path to the PEM certificate authority
+chain that validates the server certificate.}
+
+\item{mirror}{For a store: the local mirror directory. The default, \code{NULL},
+resolves on each host to option \code{tarshare.mirror}, environment variable
+\code{TARSHARE_MIRROR}, or \code{tools::R_user_dir("tarshare", "cache")}, with one
+subdirectory per store URL. Leave it \code{NULL} in pipelines whose workers run
+on several hosts: the cache configuration is embedded in target commands.}
+
+\item{chunk_size}{For a store: bytes per transfer message.}
 }
 \value{
-A cache configuration object. Construction creates the directory.
+A cache configuration object. Construction creates the directory of
+a filesystem cache. A store cache connects on first use; the access token
+is read from environment variable \code{TARSHARE_TOKEN} at that time and is
+never stored in the configuration.
 }
 \description{
-The directory must be visible at the same path to all workers that consume
-cached file outputs. It must support operating-system file locks and atomic
-directory renames within the filesystem. Use a cache shared with trusted
-collaborators: reading an R cache is not a sandbox for untrusted objects.
+A directory path gives a filesystem cache. The directory must be visible at
+the same path to all workers that consume cached file outputs. It must
+support operating-system file locks and atomic directory renames within the
+filesystem.
+}
+\details{
+A \verb{tcp://}, \verb{tls+tcp://} or \verb{ipc://} URL gives a cache served by
+\code{\link[=shared_serve]{shared_serve()}}. No shared filesystem is needed: each host copies the
+objects it uses into a local mirror, which is itself a filesystem cache.
+
+Use a cache shared with trusted collaborators: reading an R cache is not a
+sandbox for untrusted objects.
 }
 \examples{
 cache <- shared_cache(tempfile("shared-cache-"))

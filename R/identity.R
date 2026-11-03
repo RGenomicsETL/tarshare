@@ -128,6 +128,7 @@ shared_identity <- function(command, envir, context = list(), seed = 0L,
       # Materialize ALTREP vectors so equal values have the same representation.
       data <- vector(type, length(x))
       data[] <- x
+      if (is.character(data)) data <- shared_canonical_paths(data)
       return(list(type = type, s4 = isS4(x), values = data,
                   attributes = attributes_snapshot(x, ast = ast)))
     }
@@ -174,6 +175,23 @@ shared_identity <- function(command, envir, context = list(), seed = 0L,
   unsigned <- strtoi(substr(key, 1L, 7L), base = 16L) * 16 +
     strtoi(substr(key, 8L, 8L), base = 16L)
   list(key = key, seed = as.integer(unsigned %% .Machine$integer.max + 1))
+}
+
+# A path to a file result names an immutable, content-addressed object, so its
+# identity is the object id and the path within the bundle, not where the cache
+# or a store mirror is mounted on this host. Only paths inside a directory that
+# is laid out as a tarshare cache, with the object present, are rewritten.
+shared_canonical_paths <- function(x) {
+  pattern <- "^(.+)/objects/([a-f0-9]{64})/files(/.*)?$"
+  for (i in which(!is.na(x) & grepl(pattern, x))) {
+    root <- sub(pattern, "\\1", x[[i]])
+    id <- sub(pattern, "\\2", x[[i]])
+    if (dir.exists(file.path(root, "actions")) && dir.exists(file.path(root, "locks")) &&
+        file.exists(file.path(root, "objects", id, "complete"))) {
+      x[[i]] <- paste0("tarshare-object:", id, sub(pattern, "\\3", x[[i]]))
+    }
+  }
+  x
 }
 
 # Include hard dependencies recursively; optional/dynamically selected packages
